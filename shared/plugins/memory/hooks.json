@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": {
+      "handler": "./hooks-handlers/session-start.sh"
+    }
+  }
+}

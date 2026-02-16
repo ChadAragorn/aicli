@@ -1,0 +1,15 @@
+{
+  "model": "haiku",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.ai/plugins/memory/hooks-handlers/session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

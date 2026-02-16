@@ -1,0 +1,31 @@
+# Project-specific
+qmd
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+
+# Build artifacts & logs
+*.log
+dist/
+build/
+tmp/
+
+# Node.js
+node_modules/
+pnpm-lock.yaml
+bun.lockb
+
+# Docker
+docker-compose.override.yml

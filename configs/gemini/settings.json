@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "memory",
+            "type": "command",
+            "command": "~/.ai/plugins/memory/hooks-handlers/session-start.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
