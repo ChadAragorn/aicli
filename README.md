@@ -47,7 +47,7 @@ These flags disable important safety mechanisms. However, running these tools as
   - Bun runtime
   - Git & GitHub CLI
   - SQLite database
-  - Python 3
+  - Python 3 (with a user virtualenv at `/home/ai/venv` for Python CLI tools like `semgrep`)
   - Build essentials
 - **Security Features**:
   - Isolated `ai` user (uid/gid 10000)
@@ -76,6 +76,8 @@ docker build --build-arg TZ="America/Denver" --build-arg GITCONFIG=$(base64 -i ~
 **Build Arguments:**
 - `TZ`: Timezone setting (default: `America/Denver`). Use any valid timezone from `/usr/share/zoneinfo/`
 - `GITCONFIG`: Optional. Your base64-encoded git config file. Omit to skip git config injection
+
+> Note: Ubuntu 24.04 uses PEP 668 "externally managed" system Python. This image installs Python CLI tools (for example, `semgrep`) into `/home/ai/venv` instead of system site-packages.
 
 ### 2. Create a Shell Function
 
@@ -199,6 +201,7 @@ Once inside, you have access to:
 
 - **AI Tools**: `claude`, `codex`, `cursor`, `gemini` (with pre-configured aliases)
 - **Package Managers**: `npm`, `pnpm`, `bun`
+- **Package Managers**: `npm`, `pnpm`, `bun`, `pip` (via `/home/ai/venv`)
 - **Development Tools**: `git`, `gh` (GitHub CLI), `python3`, `vim`, `jq`, `ripgrep`
 - **Workspace**: Your current directory mounted at `/workspace`
 
@@ -340,6 +343,7 @@ docker run --rm -it -v "/path/to/project:/workspace" sandbox /bin/bash
 
 - **SSH key errors**: Ensure your SSH key path matches the one in the sandbox function
 - **Package installation failures**: The container may need more disk space; increase Docker's allocated storage
+- **`externally-managed-environment` during build**: Python package installs must use `/home/ai/venv/bin/python -m pip ...` (or activate `/home/ai/venv`) rather than system `python3 -m pip`
 - **Network issues**: Remove `--cap-add=NET_ADMIN` and `--cap-add=NET_RAW` if experiencing connectivity problems
 - **Volume permission errors**: Check that your host user has read permissions for mounted files
 

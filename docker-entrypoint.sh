@@ -29,6 +29,41 @@ init_directory() {
     fi
 }
 
+# Ensure shell sessions activate the project venv automatically.
+ensure_venv_activation_in_bashrc() {
+    local bashrc="/home/ai/.bashrc"
+    local venv_activate="/home/ai/venv/bin/activate"
+    local marker_start="# >>> aicli-venv >>>"
+    local marker_end="# <<< aicli-venv <<<"
+    local tmp
+
+    [ -f "$venv_activate" ] || return 0
+    [ -f "$bashrc" ] || return 0
+
+    tmp="$(mktemp)"
+
+    # Remove any existing managed block, then append one canonical block.
+    awk -v start="$marker_start" -v end="$marker_end" '
+        $0 == start { in_block=1; next }
+        in_block && $0 == end { in_block=0; next }
+        !in_block { print }
+    ' "$bashrc" > "$tmp"
+
+    cat >> "$tmp" <<EOF
+
+$marker_start
+if [ -f "/home/ai/venv/bin/activate" ] && [ -z "\${VIRTUAL_ENV:-}" ]; then
+  . "/home/ai/venv/bin/activate"
+fi
+$marker_end
+EOF
+
+    if ! cmp -s "$tmp" "$bashrc"; then
+        cp "$tmp" "$bashrc"
+    fi
+    rm -f "$tmp"
+}
+
 # Copy configs from image defaults into named volumes (only if they don't exist)
 init_config "/home/ai/.claude/settings.json" "/etc/ai/configs/claude/settings.json"
 init_config "/home/ai/.codex/AGENTS.md" "/etc/ai/configs/codex/AGENTS.md"
@@ -37,6 +72,9 @@ init_config "/home/ai/.gemini/settings.json" "/etc/ai/configs/gemini/settings.js
 
 # Copy shared directory from image defaults into named volume
 init_directory "/home/ai/.ai" "/etc/ai/shared"
+
+# Ensure interactive shells source venv activation from .bashrc
+ensure_venv_activation_in_bashrc
 
 # Execute the command passed to the container
 exec "$@"
