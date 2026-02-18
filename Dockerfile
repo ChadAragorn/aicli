@@ -26,8 +26,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     jq \
     less \
     man-db \
+    pip \
     procps \
     python3 \
+    python3-venv \
     ripgrep \
     sudo \
     unzip \
@@ -83,6 +85,7 @@ RUN if [ -n "$TZ" ] && [ "$TZ" != "UTC" ]; then \
     fi
 
 USER ai
+WORKDIR /home/ai
 
 # Set up NVM environment
 ENV NVM_DIR=/home/ai/.nvm
@@ -92,6 +95,16 @@ ENV SHELL=bash
 # Set the default editor and visual
 ENV EDITOR=vim
 ENV VISUAL=vim
+
+# create venv for ai user
+RUN python3 -m venv "$HOME/venv"
+
+# Ensure subsequent RUN/CMD use venv Python and tools first.
+ENV PATH="$HOME/venv/bin:$PATH"
+
+# Install semgrep for targeted way to find bugs/security issues
+RUN "$HOME/venv/bin/python" -m pip install --upgrade pip && \
+    "$HOME/venv/bin/python" -m pip install semgrep
 
 # Install nvm (latest release; pin to a version tag in the URL for reproducible builds)
 RUN NVM_VERSION=$(curl -s https://api.github.com/repos/nvm-sh/nvm/releases/latest | jq -r .tag_name) && \
