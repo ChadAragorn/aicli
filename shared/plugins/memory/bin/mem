@@ -37,11 +37,11 @@ case "$command" in
 
 1. **Check context usage** from system warnings (format: `Token usage: X/Y; Z remaining`)
 2. **Calculate**: If `(tokens_used / total_budget) >= 0.85`, trigger checkpoint
-3. **Determine project name** from primary working directory (basename of the path)
-4. **Create checkpoint** by writing to `~/.ai/memory/YYYY-MM-DD-HHMM.md`:
+3. **Determine project name** with: mem project
+4. **Create checkpoint** by writing to ~/.ai/memory/YYYY-MM-DD-HHMMSS.md (timestamp: mem timestamp)
    ```markdown
-   # Session: YYYY-MM-DD-HHMM
-   # Project: PROJECT-NAME
+   # Session: YYYY-MM-DD-HHMMSS
+   # Project: (output of mem project)
    # AI: e.g claude, gemini, codex, etc...
 
    ## Context Checkpoint (85% utilization)
@@ -62,7 +62,7 @@ case "$command" in
    - [What's in progress]
    - [Next steps]
    ```
-5. **Notify user**: "⚠️  Context checkpoint created at 85% (saved to ~/.ai/memory/YYYY-MM-DD-HHMM.md)"
+5. **Notify user**: "⚠️  Context checkpoint created at 85% (saved to ~/.ai/memory/YYYY-MM-DD-HHMMSS.md)"
 6. **Continue working** - no need to restart session unless context is critically full
 
 This prevents losing work when approaching model context limits (works with any model: Opus/Sonnet/Haiku, any context window size).
@@ -100,7 +100,7 @@ STATE
     ;;
 
   checkpoint)
-    TIMESTAMP=$(date +%Y-%m-%d-%H%M)
+    TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
     NOW=$(date +%H:%M)
     SESSION_FILE="$DAILY_NOTES_DIR/$TIMESTAMP.md"
 
@@ -227,6 +227,33 @@ STATE
     fi
     ;;
 
+  project)
+    # Project name from git remote URL (preferred) or current directory basename
+    GIT_URL=$(git config --get remote.origin.url 2>/dev/null | sed 's/\.git$//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -n "$GIT_URL" ]]; then
+      echo "$GIT_URL"
+    else
+      echo "$(basename "$(pwd)")"
+    fi
+    ;;
+
+  timestamp|ts)
+    # Session/filename format (YYYY-MM-DD-HHMMSS) and optional ISO for heartbeat
+    case "${2:-session}" in
+      session)
+        date +%Y-%m-%d-%H%M%S
+        ;;
+      iso)
+        date +%Y-%m-%dT%H:%M:%S
+        ;;
+      *)
+        echo -e "${RED}Unknown format: $2${NC}"
+        echo "Usage: mem timestamp [session|iso]"
+        exit 1
+        ;;
+    esac
+    ;;
+
   list)
     LIMIT="${2:-20}"
     echo -e "${BLUE}Recent sessions (last $LIMIT):${NC}"
@@ -253,6 +280,8 @@ Usage: mem <command> [options]
 Commands:
   init                Initialize memory system (create directories and files)
   checkpoint [msg]    Create a manual checkpoint in current session
+  project             Print project name (git remote URL or directory basename)
+  timestamp [fmt]     Print timestamp: session (YYYY-MM-DD-HHMMSS) or iso
   search <query>      Search through session files using ripgrep
   status              Show memory system status
   edit <target>       Edit memory files
@@ -265,6 +294,9 @@ Commands:
 Examples:
   mem init                          # Initialize memory system
   mem status                        # Check memory status
+  mem project                       # Print project name (for checkpoints)
+  mem timestamp                     # Print session timestamp (YYYY-MM-DD-HHMMSS)
+  mem timestamp iso                 # Print ISO timestamp for heartbeat
   mem search "authentication bug"   # Search session files
   mem checkpoint "Completed feature X"
   mem edit memory                   # Edit MEMORY.md
@@ -274,7 +306,7 @@ Examples:
 
 File Locations:
   Long-term memory:  $GLOBAL_MEMORY
-  Session files:     $DAILY_NOTES_DIR/YYYY-MM-DD-HHMM.md
+  Session files:     $DAILY_NOTES_DIR/YYYY-MM-DD-HHMMSS.md
   Heartbeat state:   $HEARTBEAT_STATE
 
 Architecture:
