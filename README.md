@@ -25,28 +25,6 @@ Bootstrap contract:
 - `~/.ai/cortex.md` is loaded first at session start.
 - contracts are loaded lazily from `~/.ai/systems/contracts/*.md` as needed.
 
-## Quick Start
-
-```bash
-./setup.sh
-~/.ai/bin/aih status
-~/.ai/bin/aih agents lint
-vault init
-vault status
-vault archive path/to/note.md
-```
-
-Component bootstrap examples:
-
-```bash
-AI_HOME=/tmp/global ./setup.sh core memory tools skills plugins agents systems infra bin
-./setup.sh clients
-```
-
-Agent definitions are stored in `seed/agents/definitions/*.md` with YAML
-frontmatter and are validated during `setup.sh agents` against required fields
-and filename/id match.
-
 ## Install Commands
 
 ```bash
@@ -110,7 +88,7 @@ Add that export to your shell startup file (`~/.bashrc`, `~/.zshrc`, or `~/.prof
 ### Prerequisites
 
 - Docker installed and available in your shell
-- New SSH keys created specifically for AI use `ssh-keygen -oa 1000 -t ed25519 -f ~/.ssh/ai_ed25519
+- New SSH keys created specifically for AI use. See the [SSH Keys](#ssh-keys) section.
 - Optional: base64 support if passing `GITCONFIG` at build time
 
 ### Build Image
@@ -173,3 +151,85 @@ claude() { TID="$(openssl rand -hex 24)" PROVIDER=claude command claude --danger
 codex() { TID="$(openssl rand -hex 24)" PROVIDER=codex command codex --dangerously-bypass-approvals-and-sandbox "$@"; }
 gemini() { TID="$(openssl rand -hex 24)" PROVIDER=gemini command gemini --yolo "$@"; }
 ```
+
+### Once you have built the sandbox docker image, use sandbox in the following way
+```bash
+sandbox
+```
+
+This command:
+- Creates a Docker network named `sandbox` (if it doesn't exist)
+- Mounts your SSH keys as read-only volumes
+- Shares your current working directory as `/workspace`
+- Provides persistent volumes for each AI tool's configuration
+- Runs as a non-root user
+
+### Inside the Sandbox
+
+Once inside, you have access to:
+
+- **AI Tools**: `claude`, `codex`, `cursor`, `gemini` (with pre-configured start functions)
+- **Package Managers**: `npm`, `pnpm`, `bun`
+- **Development Tools**: `git`, `gh` (GitHub CLI), `python3`, `vim`, `jq`, `ripgrep`
+- **Workspace**: Your current directory mounted at `/workspace`
+
+### SSH Keys
+
+⚠️ **IMPORTANT: Generate a dedicated SSH key for use with this container. DO NOT reuse your existing SSH keys.**
+
+The setup expects SSH keys at:
+- `~/.ssh/ai_ed25519` (private key, read-only)
+- `~/.ssh/ai_ed25519.pub` (public key, read-only)
+- `~/.ssh/known_hosts` (known hosts, read-only)
+
+#### Generate a New SSH Key for the Sandbox
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/ai_ed25519 -C "ai-sandbox" -N ""
+```
+
+This creates a dedicated key pair specifically for the sandbox.
+
+#### Add the Public Key to Your VCS
+
+You **must** add the new public key to your version control system (GitHub, GitLab, Gitea, etc.) before using the sandbox:
+
+**GitHub:**
+1. Copy your public key: `cat ~/.ssh/ai_ed25519.pub`
+2. Go to Settings → SSH and GPG keys → New SSH key
+3. Paste the key and save
+
+**GitLab:**
+1. Copy your public key: `cat ~/.ssh/ai_ed25519.pub`
+2. Go to Preferences → SSH Keys
+3. Paste the key and save
+
+**Other VCS:**
+- Consult your platform's documentation for adding SSH keys to your account
+- The public key (`~/.ssh/ai_ed25519.pub`) is what you add to your VCS profile
+
+This allows the sandbox to authenticate with your repositories without exposing your main SSH keys.
+
+#### Key Separation Benefits
+
+- **Isolation**: If the container is compromised, only the sandbox-specific key is exposed
+- **Security**: Your main SSH keys remain safe on your host system
+- **Control**: You can easily revoke the sandbox key without affecting other systems
+- **Auditability**: You can track sandbox activity separately in your VCS logs
+
+If you need to use a different key file name, update the key paths in the `sandbox()` function.
+
+### Sudo Access & Password
+
+The `ai` user is configured with sudo privileges. The Dockerfile sets a specific password hash for the `ai` user account.
+You can change this to your own password:
+
+1. Generate a SHA-512 password hash (using `crypt` format with `$y$` prefix):
+   ```bash
+   python3 -c "import crypt; print(crypt.crypt('your_password', crypt.METHOD_SHA512))"
+   ```
+
+2. Replace the hash in the Dockerfile with the hash you just generated (line 45):
+   Start with the `$` and replace from it to the last `:`.
+   
+3. Rebuild the image with your new hash.
