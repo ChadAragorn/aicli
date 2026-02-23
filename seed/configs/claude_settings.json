@@ -1,0 +1,16 @@
+{
+  "model": "sonnet",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.ai/infra/hooks/session-start.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "effortLevel": "medium"
+}

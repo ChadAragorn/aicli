@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+
+# Memory Management CLI
+# Helper tool for managing AI cli memory system
+
+set -e
+
+MEMORY_DIR="$HOME/.ai"
+DAILY_NOTES_DIR="$MEMORY_DIR/memory"
+GLOBAL_MEMORY="$MEMORY_DIR/systems/contracts/memory.md"
+HEARTBEAT_STATE="$MEMORY_DIR/memory/heartbeat-state.json"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+command="${1:-help}"
+
+case "$command" in
+  init)
+    echo -e "${BLUE}Initializing memory system...${NC}"
+
+    # Create directory
+    mkdir -p "$DAILY_NOTES_DIR"
+
+    # Create memory contract if it doesn't exist
+    if [[ ! -f "$GLOBAL_MEMORY" ]]; then
+      mkdir -p "$(dirname "$GLOBAL_MEMORY")"
+      cat > "$GLOBAL_MEMORY" <<'TEMPLATE'
+# Memory Contract
+
+## 🚨 Auto-Checkpoint Instructions
+
+**CRITICAL**: When context window utilization reaches 85% (15% remaining):
+
+1. **Check context usage** from system warnings (format: `Token usage: X/Y; Z remaining`)
+2. **Calculate**: If `(tokens_used / total_budget) >= 0.85`, trigger checkpoint
+3. **Determine project name** with: mem project
+4. **Create checkpoint** by writing to ~/.ai/memory/YYYY-MM-DD-HHMMSS.md (timestamp: mem timestamp)
+   ```markdown
+   # Session: YYYY-MM-DD-HHMMSS
+   # Project: (output of mem project)
+   # AI: e.g claude, gemini, codex, etc...
+
+   ## Context Checkpoint (85% utilization)
+
+   ### Summary
+   [Brief summary of conversation so far]
+
+   ### Key Accomplishments
+   - [What was completed]
+   - [Decisions made]
+   - [Code written]
+
+   ### Lessons Learned
+   - [Important insights]
+   - [Mistakes and solutions]
+
+   ### Current State
+   - [What's in progress]
+   - [Next steps]
+   ```
+5. **Notify user**: "⚠️  Context checkpoint created at 85% (saved to ~/.ai/memory/YYYY-MM-DD-HHMMSS.md)"
+6. **Continue working** - no need to restart session unless context is critically full
+
+This prevents losing work when approaching model context limits (works with any model: Opus/Sonnet/Haiku, any context window size).
+
+**Project-specific search**: Session files include `# Project: NAME` header for targeted retrieval (e.g., `mem search "Project: claude-code"`).
+
+## User Preferences
+- [Add your preferences here]
+
+## Development Patterns
+- [Common patterns you want Claude to follow]
+
+## Lessons Learned
+- [Document mistakes and solutions]
+
+TEMPLATE
+      echo -e "${GREEN}✓ Created memory contract: $GLOBAL_MEMORY${NC}"
+    else
+      echo -e "${YELLOW}✓ Memory contract already exists: $GLOBAL_MEMORY${NC}"
+    fi
+
+    # Initialize heartbeat state
+    if [[ ! -f "$HEARTBEAT_STATE" ]]; then
+      cat > "$HEARTBEAT_STATE" <<STATE
+{
+  "lastCheckpoint": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "lastChecks": {}
+}
+STATE
+      echo -e "${GREEN}✓ Created heartbeat state${NC}"
+    fi
+
+    echo -e "${GREEN}✓ Memory system initialized${NC}"
+    echo -e "${BLUE}Edit $GLOBAL_MEMORY to manage memory behavior/policy${NC}"
+    ;;
+
+  checkpoint)
+    TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
+    NOW=$(date +%H:%M)
+    SESSION_FILE="$DAILY_NOTES_DIR/$TIMESTAMP.md"
+
+    mkdir -p "$DAILY_NOTES_DIR"
+
+    # Create or append to session file
+    if [[ ! -f "$SESSION_FILE" ]]; then
+      cat > "$SESSION_FILE" <<HEADER
+# Session: $TIMESTAMP
+
+HEADER
+    fi
+
+    # Append checkpoint
+    MESSAGE="${2:-Manual checkpoint}"
+    cat >> "$SESSION_FILE" <<CHECKPOINT
+
+## Checkpoint $NOW - $MESSAGE
+
+CHECKPOINT
+
+    # Update heartbeat state
+    cat > "$HEARTBEAT_STATE" <<STATE
+{
+  "lastCheckpoint": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "lastSession": "$TIMESTAMP",
+  "lastChecks": {
+    "manual": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  }
+}
+STATE
+
+    echo -e "${GREEN}✓ Checkpoint created in $SESSION_FILE${NC}"
+    ;;
+
+  status)
+    echo -e "${BLUE}Memory System Status${NC}"
+    echo ""
+
+    # Check memory contract
+    if [[ -f "$GLOBAL_MEMORY" ]]; then
+      SIZE=$(wc -c < "$GLOBAL_MEMORY" | tr -d ' ')
+      LINES=$(wc -l < "$GLOBAL_MEMORY" | tr -d ' ')
+      echo -e "${GREEN}✓ Memory contract${NC}: $LINES lines, $SIZE bytes"
+    else
+      echo -e "${RED}✗ Memory contract${NC}: Not found at $GLOBAL_MEMORY (run: mem init)"
+    fi
+
+    # Check daily notes
+    if [[ -d "$DAILY_NOTES_DIR" ]]; then
+      COUNT=$(find "$DAILY_NOTES_DIR" -name "*.md" | wc -l | tr -d ' ')
+      echo -e "${GREEN}✓ Daily notes${NC}: $COUNT files"
+
+      # Show recent notes
+      if [[ $COUNT -gt 0 ]]; then
+        echo ""
+        echo -e "${BLUE}Recent daily notes:${NC}"
+        find "$DAILY_NOTES_DIR" -name "*.md" | sort -r | head -5 | while read file; do
+          BASENAME=$(basename "$file")
+          SIZE=$(wc -l < "$file" | tr -d ' ')
+          echo "  - $BASENAME ($SIZE lines)"
+        done
+      fi
+    else
+      echo -e "${YELLOW}⚠ Daily notes${NC}: Directory not found"
+    fi
+
+    # Check heartbeat state
+    echo ""
+    if [[ -f "$HEARTBEAT_STATE" ]]; then
+      LAST_CHECKPOINT=$(jq -r '.lastCheckpoint' "$HEARTBEAT_STATE" 2>/dev/null || echo "unknown")
+      echo -e "${GREEN}✓ Last checkpoint${NC}: $LAST_CHECKPOINT"
+    else
+      echo -e "${YELLOW}⚠ Heartbeat state${NC}: Not initialized"
+    fi
+    ;;
+
+  edit)
+    TARGET="${2:-memory}"
+    case "$TARGET" in
+      memory|MEMORY)
+        ${EDITOR:-vim} "$GLOBAL_MEMORY"
+        ;;
+      last)
+        # Edit most recent session file
+        LAST_FILE=$(find "$DAILY_NOTES_DIR" -name "*.md" 2>/dev/null | sort -r | head -1)
+        if [[ -n "$LAST_FILE" ]]; then
+          ${EDITOR:-vim} "$LAST_FILE"
+        else
+          echo -e "${RED}✗ No session files found${NC}"
+        fi
+        ;;
+      *)
+        # Treat as a file pattern (e.g., "2026-02-16" to edit that day's sessions)
+        FILES=$(find "$DAILY_NOTES_DIR" -name "*$TARGET*.md" 2>/dev/null | sort)
+        if [[ -n "$FILES" ]]; then
+          ${EDITOR:-vim} $FILES
+        else
+          echo -e "${RED}✗ No files matching '$TARGET'${NC}"
+          echo "Usage: mem edit [memory|last|PATTERN]"
+        fi
+        ;;
+    esac
+    ;;
+
+  search)
+    QUERY="$2"
+    if [[ -z "$QUERY" ]]; then
+      echo -e "${RED}Error: Search query required${NC}"
+      echo "Usage: mem search <query>"
+      exit 1
+    fi
+
+    echo -e "${BLUE}Searching memory for: ${NC}\"$QUERY\""
+    echo ""
+
+    # Search using rg if available, fallback to grep
+    if command -v rg &> /dev/null; then
+      rg --color=always -C 2 -n "$QUERY" "$DAILY_NOTES_DIR" 2>/dev/null || \
+        echo -e "${YELLOW}No results found${NC}"
+    else
+      grep -r -C 2 -n "$QUERY" "$DAILY_NOTES_DIR" 2>/dev/null || \
+        echo -e "${YELLOW}No results found (install ripgrep for better search)${NC}"
+    fi
+    ;;
+
+  project)
+    # Project name from git remote URL (preferred) or current directory basename
+    GIT_URL=$(git config --get remote.origin.url 2>/dev/null | sed 's/\.git$//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -n "$GIT_URL" ]]; then
+      echo "$GIT_URL"
+    else
+      echo "$(basename "$(pwd)")"
+    fi
+    ;;
+
+  timestamp|ts)
+    # Session/filename format (YYYY-MM-DD-HHMMSS) and optional ISO for heartbeat
+    case "${2:-session}" in
+      session)
+        date +%Y-%m-%d-%H%M%S
+        ;;
+      iso)
+        date +%Y-%m-%dT%H:%M:%S
+        ;;
+      *)
+        echo -e "${RED}Unknown format: $2${NC}"
+        echo "Usage: mem timestamp [session|iso]"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  list)
+    LIMIT="${2:-20}"
+    echo -e "${BLUE}Recent sessions (last $LIMIT):${NC}"
+    echo ""
+
+    if [[ -d "$DAILY_NOTES_DIR" ]]; then
+      find "$DAILY_NOTES_DIR" -name "*.md" 2>/dev/null | sort -r | head -n "$LIMIT" | while read file; do
+        BASENAME=$(basename "$file" .md)
+        LINES=$(wc -l < "$file" | tr -d ' ')
+        CHECKPOINTS=$(grep -c "^## Checkpoint" "$file" 2>/dev/null || echo "0")
+        echo "  $BASENAME - $LINES lines, $CHECKPOINTS checkpoints"
+      done
+    else
+      echo -e "${YELLOW}No session files found${NC}"
+    fi
+    ;;
+
+  help|--help|-h)
+    cat <<HELP
+Memory Management CLI for AI coding cli
+
+Usage: mem <command> [options]
+
+Commands:
+  init                Initialize memory system (create directories and files)
+  checkpoint [msg]    Create a manual checkpoint in current session
+  project             Print project name (git remote URL or directory basename)
+  timestamp [fmt]     Print timestamp: session (YYYY-MM-DD-HHMMSS) or iso
+  search <query>      Search through session files using ripgrep
+  status              Show memory system status
+  edit <target>       Edit memory files
+    - memory          Edit systems/contracts/memory.md (memory behavior contract)
+    - last            Edit most recent session file
+    - <pattern>       Edit files matching pattern (e.g., "2026-02-16")
+  list [limit]        List recent sessions (default: 20)
+  help                Show this help message
+
+Examples:
+  mem init                          # Initialize memory system
+  mem status                        # Check memory status
+  mem project                       # Print project name (for checkpoints)
+  mem timestamp                     # Print session timestamp (YYYY-MM-DD-HHMMSS)
+  mem timestamp iso                 # Print ISO timestamp for heartbeat
+  mem search "authentication bug"   # Search session files
+  mem checkpoint "Completed feature X"
+  mem edit memory                   # Edit systems/contracts/memory.md
+  mem edit last                     # Edit latest session
+  mem edit 2026-02-16               # Edit all sessions from Feb 16
+  mem list 10                       # Show last 10 sessions
+
+File Locations:
+  Long-term memory:  $GLOBAL_MEMORY
+  Session files:     $DAILY_NOTES_DIR/YYYY-MM-DD-HHMMSS.md
+  Heartbeat state:   $HEARTBEAT_STATE
+
+Architecture:
+  - cortex.md loads first; contracts are loaded on-demand from systems/contracts/
+  - Session files are created on session end (timestamped raw notes)
+  - Use 'mem search' to find context in session files when needed
+
+HELP
+    ;;
+
+  *)
+    echo -e "${RED}Unknown command: $command${NC}"
+    echo "Run 'mem help' for usage information"
+    exit 1
+    ;;
+esac

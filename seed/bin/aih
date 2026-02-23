@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AI_HOME="${AI_HOME:-$HOME/.ai}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  aih status
+  aih doctor
+  aih agents lint
+  aih path
+EOF
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+count_files() {
+  local path="$1"
+  if [[ ! -d "$path" ]]; then
+    echo 0
+    return
+  fi
+  find "$path" -type f | wc -l | tr -d ' '
+}
+
+status_harness() {
+  local bin memory tools skills plugins configs agents systems_contracts systems infra
+  bin="$(count_files "$AI_HOME/bin")"
+  memory="$(count_files "$AI_HOME/memory")"
+  tools="$(count_files "$AI_HOME/tools/bin")"
+  skills="$(count_files "$AI_HOME/skills")"
+  plugins="$(count_files "$AI_HOME/plugins")"
+  configs="$(count_files "$AI_HOME/configs")"
+  agents="$(count_files "$AI_HOME/agents/definitions")"
+  systems_contracts="$(count_files "$AI_HOME/systems/contracts")"
+  systems="$(count_files "$AI_HOME/systems/prompts")"
+  infra="$(count_files "$AI_HOME/infra/hooks")"
+
+  cat <<EOF
+AI Home: $AI_HOME
+bin files: $bin
+memory files: $memory
+tools files: $tools
+skills files: $skills
+plugins files: $plugins
+configs files: $configs
+agents files: $agents
+systems contracts files: $systems_contracts
+systems files: $systems
+infra files: $infra
+EOF
+}
+
+doctor_harness() {
+  local missing=0
+  local cmds=("bash" "find" "date" "rg")
+  for cmd in "${cmds[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "missing: $cmd"
+      missing=1
+    fi
+  done
+
+  if [[ $missing -eq 0 ]]; then
+    echo "doctor: ok"
+  else
+    die "doctor failed"
+  fi
+}
+
+validate_agent_file() {
+  local file="$1"
+  local ok=1
+  local frontmatter
+  local required_keys
+  required_keys="id name purpose model skills tools"
+
+  frontmatter="$(awk '
+    BEGIN {fm=0}
+    /^---[[:space:]]*$/ && fm==0 {fm=1; next}
+    /^---[[:space:]]*$/ && fm==1 {exit}
+    fm==1 {print}
+  ' "$file")"
+
+  if [[ -z "$frontmatter" ]]; then
+    echo "invalid: $file missing YAML frontmatter" >&2
+    return 1
+  fi
+
+  for key in $required_keys; do
+    if ! printf "%s\n" "$frontmatter" | rg -q "^[[:space:]]*${key}:[[:space:]]*"; then
+      echo "invalid: $file missing '$key'" >&2
+      ok=0
+    fi
+  done
+
+  local id_value
+  local expected_id
+  id_value="$(printf "%s\n" "$frontmatter" | sed -nE "s/^[[:space:]]*id:[[:space:]]*['\"]?([^'\"]+)['\"]?[[:space:]]*$/\1/p" | head -n 1)"
+  expected_id="$(basename "$file" .md)"
+  if [[ -z "$id_value" ]]; then
+    echo "invalid: $file has empty id" >&2
+    ok=0
+  elif [[ "$id_value" != "$expected_id" ]]; then
+    echo "invalid: $file id '$id_value' must match filename '$expected_id'" >&2
+    ok=0
+  fi
+
+  [[ "$ok" -eq 1 ]]
+}
+
+lint_agents() {
+  local definitions_dir="$AI_HOME/agents/definitions"
+  if [[ ! -d "$definitions_dir" ]]; then
+    die "missing directory: $definitions_dir"
+  fi
+
+  local failures=0
+  local found=0
+  while IFS= read -r file; do
+    found=1
+    if ! validate_agent_file "$file"; then
+      failures=$((failures + 1))
+    fi
+  done < <(find "$definitions_dir" -type f -name "*.md" | sort)
+
+  if [[ "$found" -eq 0 ]]; then
+    die "no agent definitions found in $definitions_dir"
+  fi
+
+  if [[ "$failures" -gt 0 ]]; then
+    die "agents lint failed with $failures invalid definition(s)"
+  fi
+
+  echo "agents lint: ok ($definitions_dir)"
+}
+
+cmd="${1:-}"
+subcmd="${2:-}"
+case "$cmd" in
+status)
+  shift
+  status_harness "$@"
+  ;;
+doctor)
+  shift
+  doctor_harness "$@"
+  ;;
+agents)
+  case "$subcmd" in
+  lint)
+    shift 2
+    lint_agents "$@"
+    ;;
+  *)
+    die "unknown agents subcommand: ${subcmd:-<empty>}"
+    ;;
+  esac
+  ;;
+path)
+  echo "$AI_HOME"
+  ;;
+-h | --help | help | "")
+  usage
+  ;;
+*)
+  die "unknown command: $cmd"
+  ;;
+esac

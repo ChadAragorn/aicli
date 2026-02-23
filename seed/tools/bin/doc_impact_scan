@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+#Author: Chad Miller
+#Date: 2026-02-06
+#Purpose: Pre-commit hook to detect staged changes across mixed tech stacks and determine which AI context docs likely need updates, failing the commit if required docs are not also updated.
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
+
+
+DOC_ROOT = Path(".ai/context/documentation")
+DOC_META_DIR = DOC_ROOT / "_meta"
+DOC_IMPACT_JSON = DOC_META_DIR / "doc_impact.json"
+
+
+# --- Core doc files (baseline set) ---
+DOC_PROJECT_OVERVIEW = "project-overview.md"
+DOC_ARCH = "architecture-and-design.md"
+DOC_API = "api-documentation.md"
+DOC_CODE = "code-structure-and-modules.md"
+DOC_ENV = "environment-variables.md"
+DOC_WORKFLOWS = "workflows-and-processes.md"
+DOC_DEPS = "dependencies-and-integrations.md"
+DOC_DB = "database-schema.md"
+DOC_TEST = "testing-and-quality.md"
+DOC_GOTCHAS = "gotchas-and-footguns.md"
+DOC_INCONSIST = "inconsistencies-dead-paths-and-deprecations.md"
+
+
+# --- Tooling-only paths (do not force project docs updates) ---
+TOOLING_ONLY_GLOBS = [
+    ".pre-commit-config.yaml",
+    ".pre-commit-hooks.yaml",
+    ".gitignore",
+    ".gitattributes",
+    ".editorconfig",
+    "scripts/**",
+    ".ai/**",
+]
+
+# --- Config-ish files (may imply env/execution config changes) ---
+# Note: This is intentionally conservative and excludes common tooling configs to reduce noise.
+CONFIG_FILE_GLOBS = [
+    ".env*",
+    "**/.env*",
+    "**/config/**",
+    "**/configs/**",
+    "**/settings.py",
+    "**/settings/**",
+    "**/config.py",
+    "**/config.ts",
+    "**/config.js",
+    "**/config.php",
+    "**/config.yaml",
+    "**/config.yml",
+    "**/config.json",
+    "**/*.ini",
+    "**/*.toml",
+]
+
+CONFIG_EXCLUDE_GLOBS = [
+    ".pre-commit-config.yaml",
+    ".pre-commit-hooks.yaml",
+    "**/tsconfig*.json",
+    "**/eslint*.json",
+    "**/.eslintrc*",
+    "**/prettier*",
+    "**/.prettierrc*",
+    "**/vite.config.*",
+    "**/webpack.config.*",
+    "**/rollup.config.*",
+]
+
+
+# --- Path triggers (cheap) ---
+TRIGGERS: List[Tuple[str, str, str]] = [
+    ("ci_cd", ".github/workflows/*", DOC_WORKFLOWS),
+    ("ci_cd", ".gitlab-ci.yml", DOC_WORKFLOWS),
+
+    ("containers", "Dockerfile*", "setup-and-development.md"),
+    ("containers", "**/Dockerfile*", "setup-and-development.md"),
+    ("containers", "docker-compose*.y*l", "setup-and-development.md"),
+
+    ("kubernetes", "k8s/**", DOC_WORKFLOWS),
+    ("kubernetes", "helm/**", DOC_WORKFLOWS),
+
+    ("deps", "package.json", DOC_DEPS),
+    ("deps", "package-lock.json", DOC_DEPS),
+    ("deps", "pnpm-lock.yaml", DOC_DEPS),
+    ("deps", "yarn.lock", DOC_DEPS),
+    ("deps", "pyproject.toml", DOC_DEPS),
+    ("deps", "poetry.lock", DOC_DEPS),
+    ("deps", "requirements*.txt", DOC_DEPS),
+    ("deps", "**/requirements*.txt", DOC_DEPS),
+    ("deps", "go.mod", DOC_DEPS),
+    ("deps", "go.sum", DOC_DEPS),
+    ("deps", "Cargo.toml", DOC_DEPS),
+    ("deps", "Cargo.lock", DOC_DEPS),
+    ("deps", "composer.json", DOC_DEPS),
+    ("deps", "composer.lock", DOC_DEPS),
+
+    ("db", "migrations/**", DOC_DB),
+    ("db", "**/*migrat*.*", DOC_DB),
+    ("db", "**/*schema*.*", DOC_DB),
+
+    ("api_specs", "**/*openapi*.*", DOC_API),
+    ("api_specs", "**/*swagger*.*", DOC_API),
+    ("api_specs", "**/*.graphql", DOC_API),
+
+    # Broad architecture touches
+    ("architecture", "src/**", DOC_ARCH),
+    ("architecture", "services/**", DOC_ARCH),
+    ("architecture", "apps/**", DOC_ARCH),
+]
+
+
+# --- Diff-based detectors (bounded staged diff) ---
+
+# Environment variable usage patterns across stacks
+ENV_PATTERNS = [
+    # JS/TS
+    re.compile(r"\bprocess\.env\.([A-Z0-9_]+)\b"),
+    re.compile(r"\bimport\.meta\.env\.([A-Z0-9_]+)\b"),
+    # Python
+    re.compile(r"\bos\.getenv\(\s*['\"]([A-Z0-9_]+)['\"]\s*\)"),
+    re.compile(r"\bos\.environ\[\s*['\"]([A-Z0-9_]+)['\"]\s*\]"),
+    re.compile(r"\bgetenv\(\s*['\"]([A-Z0-9_]+)['\"]\s*\)"),
+    # PHP/Laravel
+    re.compile(r"\benv\(\s*['\"]([A-Z0-9_]+)['\"]"),
+    # Laravel config keys (not env vars, but often execution config)
+    re.compile(r"\bconfig\(\s*['\"]([a-zA-Z0-9_\-\.]+)['\"]\s*\)"),
+]
+
+# API surface detectors (cheap signals)
+FASTAPI_ROUTE = re.compile(
+    r"^\s*@\s*(?:\w+\.)?(get|post|put|patch|delete|options|head)\s*\(",
+    re.IGNORECASE | re.MULTILINE,
+)
+DJANGO_URLPATTERN = re.compile(r"\b(?:path|re_path)\s*\(", re.MULTILINE)
+DJANGO_VIEWSET_ROUTER = re.compile(r"\brouter\.register\s*\(", re.MULTILINE)
+
+NEST_CONTROLLER = re.compile(r"^\s*@Controller\b", re.MULTILINE)
+NEST_ROUTE_DECORATOR = re.compile(r"^\s*@(?:Get|Post|Put|Patch|Delete|Options|Head)\b", re.MULTILINE)
+
+NEXT_APP_ROUTE = re.compile(r"(?:^|/)(?:app)/.+/route\.(?:ts|tsx|js|jsx)$")
+NEXT_PAGES_API = re.compile(r"(?:^|/)(?:pages)/api/.+\.(?:ts|tsx|js|jsx)$")
+
+LARAVEL_ROUTES_FILE = re.compile(r"(?:^|/)(?:routes)/(?:web|api|channels|console)\.php$")
+LARAVEL_ROUTE_CALL = re.compile(
+    r"\bRoute::(?:get|post|put|patch|delete|options|match|any|resource|apiResource)\s*\(",
+    re.IGNORECASE,
+)
+
+VUE_ROUTER_FILE = re.compile(r"(?:^|/)(?:router|routes)\b.*\.(?:js|ts)$", re.IGNORECASE)
+VUE_ROUTE_OBJECT = re.compile(r"\bpath\s*:\s*['\"]/|^\s*\{\s*path\s*:\s*['\"]", re.MULTILINE)
+
+# Auth/session-ish detectors (cheap)
+AUTH_KEYWORDS = re.compile(r"\b(jwt|oauth|openid|saml|session|cookie|csrf|authz|authn|passport)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Impact:
+    trigger_hits: Dict[str, List[str]]  # trigger_name -> list of paths that caused it
+    docs_to_review: Set[str]
+    env_vars_touched: Set[str]
+    api_surface_touched: bool
+    auth_surface_touched: bool
+
+
+def run_git(args: List[str]) -> str:
+    try:
+        cp = subprocess.run(
+            ["git"] + args,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return cp.stdout
+    except subprocess.CalledProcessError as e:
+        msg = e.stderr.strip() or e.stdout.strip() or str(e)
+        raise RuntimeError(f"git {' '.join(args)} failed: {msg}") from e
+
+
+def repo_root() -> Path:
+    out = run_git(["rev-parse", "--show-toplevel"]).strip()
+    return Path(out)
+
+
+def get_staged_files() -> List[str]:
+    out = run_git(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def get_staged_patch_for_paths(paths: List[str], max_bytes: int) -> str:
+    if not paths:
+        return ""
+    out = run_git(["diff", "--cached", "--unified=0", "--"] + paths)
+    if len(out.encode("utf-8")) > max_bytes:
+        return ""
+    return out
+
+
+def match_glob(path: str, glob_pat: str) -> bool:
+    p = path.replace(os.sep, "/")
+    g = glob_pat.replace(os.sep, "/")
+    return fnmatch.fnmatch(p, g)
+
+
+def doc_path(doc_filename: str) -> str:
+    return str(DOC_ROOT / doc_filename)
+
+
+def is_tooling_only_change(staged_files: List[str]) -> bool:
+    # True if ALL staged files are tooling-only files.
+    for f in staged_files:
+        if not any(match_glob(f, pat) for pat in TOOLING_ONLY_GLOBS):
+            return False
+    return True
+
+
+def is_configish(path: str) -> bool:
+    if any(match_glob(path, pat) for pat in CONFIG_EXCLUDE_GLOBS):
+        return False
+    return any(match_glob(path, pat) for pat in CONFIG_FILE_GLOBS)
+
+
+def detect_api_surface(staged_files: List[str], staged_patch: str) -> bool:
+    # File-path signals
+    for p in staged_files:
+        pp = p.replace(os.sep, "/")
+        if NEXT_APP_ROUTE.search(pp) or NEXT_PAGES_API.search(pp):
+            return True
+        if LARAVEL_ROUTES_FILE.search(pp):
+            return True
+        if VUE_ROUTER_FILE.search(pp):
+            return True
+        if pp.endswith("urls.py") or pp.endswith("routes.py"):
+            return True
+
+    # Diff-content signals (bounded)
+    if not staged_patch:
+        return False
+
+    if FASTAPI_ROUTE.search(staged_patch):
+        return True
+    if DJANGO_URLPATTERN.search(staged_patch) or DJANGO_VIEWSET_ROUTER.search(staged_patch):
+        return True
+    if NEST_CONTROLLER.search(staged_patch) or NEST_ROUTE_DECORATOR.search(staged_patch):
+        return True
+    if LARAVEL_ROUTE_CALL.search(staged_patch):
+        return True
+    if VUE_ROUTE_OBJECT.search(staged_patch):
+        return True
+
+    return False
+
+
+def detect_auth_surface(staged_patch: str) -> bool:
+    if not staged_patch:
+        return False
+    return bool(AUTH_KEYWORDS.search(staged_patch))
+
+
+def compute_impact(staged_files: List[str], staged_patch: str) -> Impact:
+    trigger_hits: Dict[str, List[str]] = {}
+    docs_to_review: Set[str] = set()
+
+    # Path-based triggers
+    for trigger_name, glob_pat, doc in TRIGGERS:
+        matched = [p for p in staged_files if match_glob(p, glob_pat)]
+        if matched:
+            trigger_hits.setdefault(trigger_name, []).extend(matched)
+            docs_to_review.add(doc_path(doc))
+
+    # Config-ish files (execution/env config)
+    envish = [p for p in staged_files if is_configish(p)]
+    if envish:
+        trigger_hits.setdefault("env_config_files", []).extend(envish)
+        docs_to_review.add(doc_path(DOC_ENV))
+
+    # Extract env var names from staged patch (best-effort)
+    env_vars: Set[str] = set()
+    if staged_patch:
+        for rx in ENV_PATTERNS:
+            for m in rx.finditer(staged_patch):
+                env_vars.add(m.group(1))
+
+    if env_vars:
+        trigger_hits.setdefault("env_var_references", []).append("(from staged diff)")
+        docs_to_review.add(doc_path(DOC_ENV))
+
+    api_surface_touched = detect_api_surface(staged_files, staged_patch)
+    if api_surface_touched:
+        trigger_hits.setdefault("api_surface", []).append("(detected via stack heuristics)")
+        docs_to_review.add(doc_path(DOC_API))
+
+    auth_surface_touched = detect_auth_surface(staged_patch)
+    if auth_surface_touched:
+        trigger_hits.setdefault("auth_surface", []).append("(keyword hit in staged diff)")
+        docs_to_review.add(doc_path(DOC_API))
+        docs_to_review.add(doc_path(DOC_GOTCHAS))
+
+    # If "core" code touched, suggest code structure doc review too (cheap heuristic)
+    backendish = any(
+        p.endswith((".py", ".ts", ".js", ".php"))
+        and any(seg in p.replace(os.sep, "/") for seg in ["/src/", "/app/", "/apps/", "/services/"])
+        for p in staged_files
+    )
+    if backendish:
+        docs_to_review.add(doc_path(DOC_CODE))
+
+    return Impact(
+        trigger_hits=trigger_hits,
+        docs_to_review=docs_to_review,
+        env_vars_touched=env_vars,
+        api_surface_touched=api_surface_touched,
+        auth_surface_touched=auth_surface_touched,
+    )
+
+
+def staged_includes_any(paths: Set[str]) -> bool:
+    staged = set(get_staged_files())
+    rels = {str(Path(p)) for p in paths}
+    return any(r in staged for r in rels)
+
+
+def write_impact_json(root: Path, impact: Impact, staged_files: List[str]) -> None:
+    DOC_META_DIR.mkdir(parents=True, exist_ok=True)
+    head = run_git(["rev-parse", "HEAD"]).strip()
+    payload = {
+        "head": head,
+        "staged_files": staged_files,
+        "trigger_hits": impact.trigger_hits,
+        "docs_to_review": sorted(impact.docs_to_review),
+        "env_vars_touched": sorted(impact.env_vars_touched),
+        "api_surface_touched": impact.api_surface_touched,
+        "auth_surface_touched": impact.auth_surface_touched,
+    }
+    (root / DOC_IMPACT_JSON).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def print_plan(impact: Impact, staged_files: List[str]) -> None:
+    lines: List[str] = []
+    lines.append("Doc Impact Plan")
+    lines.append("--------------")
+    lines.append(f"Staged files: {len(staged_files)}")
+
+    if impact.trigger_hits:
+        lines.append("Trigger hits:")
+        for trig, paths in sorted(impact.trigger_hits.items()):
+            uniq = sorted(set(paths))
+            lines.append(f"  - {trig}: {len(uniq)} item(s)")
+            for pth in uniq[:25]:
+                lines.append(f"      • {pth}")
+            if len(uniq) > 25:
+                lines.append(f"      • ... ({len(uniq) - 25} more)")
+    else:
+        lines.append("Trigger hits: (none)")
+
+    if impact.docs_to_review:
+        lines.append("Docs to review/update:")
+        for d in sorted(impact.docs_to_review):
+            lines.append(f"  - {d}")
+    else:
+        lines.append("Docs to review/update: (none)")
+
+    if impact.env_vars_touched:
+        lines.append("Env vars referenced in diff (best-effort):")
+        for v in sorted(impact.env_vars_touched):
+            lines.append(f"  - {v}")
+
+    print("\n".join(lines))
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Detect staged changes and determine which documentation files should be updated."
+    )
+    p.add_argument(
+        "--mode",
+        choices=["warn", "enforce"],
+        default="enforce",
+        help="warn = never fail commit; enforce = fail if required docs not staged",
+    )
+    p.add_argument(
+        "--write-impact-json",
+        action="store_true",
+        help="Write .ai/context/documentation/_meta/doc_impact.json (not staged automatically).",
+    )
+    p.add_argument(
+        "--max-diff-bytes",
+        type=int,
+        default=250_000,
+        help="Maximum bytes of staged diff to analyze.",
+    )
+    p.add_argument(
+        "--print",
+        action="store_true",
+        help="Print the impact plan to stdout.",
+    )
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    root = repo_root()
+    os.chdir(root)
+
+    staged_files = get_staged_files()
+    if not staged_files:
+        return
+
+    # If this is a tooling/bootstrap-only commit, do not force project doc updates.
+    if is_tooling_only_change(staged_files):
+        if args.print:
+            # Still show info in case someone wants visibility
+            impact = Impact(trigger_hits={}, docs_to_review=set(), env_vars_touched=set(), api_surface_touched=False, auth_surface_touched=False)
+            print_plan(impact, staged_files)
+        if args.write_impact_json:
+            # Write a minimal impact file (optional). Keeps downstream consumers happy.
+            DOC_META_DIR.mkdir(parents=True, exist_ok=True)
+            head = run_git(["rev-parse", "HEAD"]).strip()
+            payload = {
+                "head": head,
+                "staged_files": staged_files,
+                "trigger_hits": {"tooling_only": staged_files},
+                "docs_to_review": [],
+                "env_vars_touched": [],
+                "api_surface_touched": False,
+                "auth_surface_touched": False,
+            }
+            (root / DOC_IMPACT_JSON).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return
+
+    # Avoid diff-content analysis noise from tooling files by excluding them from the patch scan.
+    non_tooling_files = [f for f in staged_files if not any(match_glob(f, pat) for pat in TOOLING_ONLY_GLOBS)]
+    staged_patch = get_staged_patch_for_paths(non_tooling_files, args.max_diff_bytes)
+
+    impact = compute_impact(staged_files, staged_patch)
+
+    doc_root_exists = DOC_ROOT.exists()
+
+    if args.write_impact_json:
+        write_impact_json(root, impact, staged_files)
+
+    if args.print:
+        print_plan(impact, staged_files)
+
+    if args.mode == "warn":
+        return
+
+    # Enforce only when docs folder exists; don't brick repos that haven't adopted docs yet.
+    if doc_root_exists and impact.docs_to_review:
+        if not staged_includes_any(impact.docs_to_review):
+            msg = [
+                "",
+                "Documentation likely needs updates based on your staged changes, but none of the suggested doc files are staged.",
+                "",
+                "Suggested doc files to update/stage:",
+                *[f"  - {d}" for d in sorted(impact.docs_to_review)],
+                "",
+                "Options:",
+                "  1) Update/stage the relevant doc(s), then retry commit",
+                "  2) Run hook in warn mode temporarily:",
+                "       python3 scripts/doc_impact_scan.py --mode warn --print",
+                "",
+            ]
+            print("\n".join(msg), file=sys.stderr)
+            raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: transcriptid [--provider <name>] [--tid <value>] [--latest] [--show-match]
+
+Find transcript files for a provider, primarily by matching a session TID.
+
+Options:
+  --provider <name>   Provider: cursor|claude|codex|gemini (or env PROVIDER)
+  --tid <value>       Session correlation id (or env TID)
+  --latest            Ignore TID and return newest transcript file for provider
+  --show-match        Print first matching line (grep-style) for selected file
+  -h, --help          Show help
+
+Examples:
+  PROVIDER=gemini TID=e01b... transcriptid
+  transcriptid --provider cursor --tid e01b... --show-match
+  transcriptid --provider codex --latest
+USAGE
+}
+
+provider="${PROVIDER:-}"
+tid="${TID:-}"
+force_latest="0"
+show_match="0"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --provider)
+      provider="${2:-}"
+      shift 2
+      ;;
+    --tid)
+      tid="${2:-}"
+      shift 2
+      ;;
+    --latest)
+      force_latest="1"
+      shift
+      ;;
+    --show-match)
+      show_match="1"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown"
+      exit 1
+      ;;
+  esac
+done
+
+provider="$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')"
+
+if [[ -z "$provider" ]]; then
+  echo "unknown"
+  exit 1
+fi
+
+mtime_of() {
+  local f="$1"
+  stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0
+}
+
+collect_files() {
+  local p="$1"
+  case "$p" in
+    cursor|cursor-agent|agent)
+      while IFS= read -r -d '' dir; do
+        find "$dir" -maxdepth 1 -type f -name "*.jsonl" -print0 2>/dev/null
+      done < <(find "$HOME/.cursor" -type d -name "agent-transcripts" -print0 2>/dev/null)
+      ;;
+    claude|claude-code)
+      find "$HOME/.claude/projects" -type f -name "*.jsonl" -print0 2>/dev/null
+      ;;
+    codex)
+      find "$HOME/.codex/sessions" -type f -name "*.jsonl" -print0 2>/dev/null
+      ;;
+    gemini)
+      find "$HOME/.gemini/tmp" -type f -path "*/chats/*.json" -print0 2>/dev/null
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+select_newest() {
+  local newest=""
+  local newest_mtime=0
+  local f m
+  for f in "$@"; do
+    m="$(mtime_of "$f")"
+    if [[ "$m" -gt "$newest_mtime" ]]; then
+      newest_mtime="$m"
+      newest="$f"
+    fi
+  done
+  printf '%s\n' "$newest"
+}
+
+files=()
+while IFS= read -r -d '' f; do
+  files+=("$f")
+done < <(collect_files "$provider" || true)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "unknown"
+  exit 1
+fi
+
+selected=""
+
+if [[ "$force_latest" == "1" || -z "$tid" ]]; then
+  selected="$(select_newest "${files[@]}")"
+else
+  matches=()
+  for f in "${files[@]}"; do
+    if grep -F -q -- "$tid" "$f" 2>/dev/null; then
+      matches+=("$f")
+    fi
+  done
+
+  if [[ ${#matches[@]} -eq 0 ]]; then
+    echo "unknown"
+    exit 1
+  fi
+
+  selected="$(select_newest "${matches[@]}")"
+fi
+
+if [[ -z "$selected" ]]; then
+  echo "unknown"
+  exit 1
+fi
+
+if [[ "$show_match" == "1" && -n "$tid" ]]; then
+  grep -Hn -F -m1 -- "$tid" "$selected" || true
+else
+  printf '%s\n' "$selected"
+fi

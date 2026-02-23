@@ -1,90 +1,137 @@
-# AI CLI Sandbox
+# AI Foundation Global Harness
 
-A containerized development environment for safely running multiple AI CLI tools with persistent configuration and isolated networking.
+This repository defines a local, AI-agnostic harness so different AI TUIs
+(Claude, Codex, Gemini, etc.) can operate against the same system.
 
-## Overview
+## Scope
 
-AI CLI Sandbox provides a Docker-based sandbox environment designed to run various AI CLI tools (Claude Code, OpenAI Codex, Google Gemini, and Cursor) in a unified, isolated container. This setup enables you to experiment with different AI tools while maintaining a consistent development environment, complete with all necessary build tools, Node.js ecosystem tools, and version control capabilities.
+- shared tools
+- agent definitions
+- shared memory vault
+- system prompts/contracts
+- infrastructure hooks/scripts
 
-## Purpose & Use Cases
+## Layout
 
-- **Multi-Tool AI Development**: Work with multiple AI CLI tools in a single container without cluttering your host system
-- **Isolated Experimentation**: Test AI tools in a sandboxed environment with controlled access to your system resources
-- **Persistent Configuration**: Maintain separate configurations for each AI tool via Docker volumes
-- **Safe Automation**: Execute AI CLI commands with predefined security settings via aliases
-- **Development Environment**: Pre-configured with Node.js, npm, pnpm, bun, git, and other essential development tools
+- `seed/bin/aih`: Harness CLI source for initializing and validating shared state.
+- `seed/tools/bin/vault`: Canonical memory vault CLI (file-native markdown+YAML notes).
+- `setup.sh`: Root bootstrap orchestrator for new-system provisioning.
+- `scripts/setup/*.sh`: Per-domain installers (`plugins.sh`, `agents.sh`, etc.).
+- `seed/`: Repository seed bundle copied into `$AI_HOME` during setup.
+- `docs/architecture.md`: Canonical architecture and integration contract.
 
-## ⚠️ Security Considerations
+Bootstrap contract:
 
-This sandbox runs AI CLI tools with safety checks disabled (see aliases in the Dockerfile). **Running AI tools with chains off is not safe.** The tools are configured with flags like:
-- `claude --dangerously-skip-permissions`
-- `codex --dangerously-bypass-approvals-and-sandbox`
-- `agent --yolo`
-- `gemini --yolo`
+- `~/.ai/cortex.md` is loaded first at session start.
+- contracts are loaded lazily from `~/.ai/systems/contracts/*.md` as needed.
 
-These flags disable important safety mechanisms. However, running these tools as an **unprivileged user (`ai`) within a container** provides some level of containment compared to running them directly on your host system. If an AI tool misbehaves or is exploited, the damage is limited to the container environment.
-
-**This is not a complete security solution.** Use this sandbox only for:
-- Development and experimentation
-- Isolated testing of AI tools
-- Work you're comfortable running in an untrusted environment
-
-**Do not use this for:**
-- Production workloads
-- Handling sensitive data or credentials
-- Systems requiring high security guarantees
-
-## Features
-
-- **Multiple AI CLI Tools**: Pre-installed and configured for:
-  - Claude Code (Anthropic)
-  - OpenAI Codex
-  - Google Gemini
-  - Cursor
-- **Development Toolchain**:
-  - Node.js 24 (via nvm)
-  - pnpm package manager
-  - Bun runtime
-  - Git & GitHub CLI
-  - SQLite database
-  - Python 3 (with a user virtualenv at `/home/ai/venv` for Python CLI tools like `semgrep`)
-  - Build essentials
-- **Security Features**:
-  - Isolated `ai` user (uid/gid 10000)
-  - Network isolation with optional NET_ADMIN/NET_RAW capabilities
-  - Volume mounting for configuration persistence
-  - SSH key isolation
-- **Developer-Friendly Aliases**: Pre-configured shortcuts for launching AI tools with sensible defaults
-
-## Prerequisites
-
-- Docker and Docker Compose installed
-- Git (for cloning this repository)
-- SSH keys for git authentication (optional, but recommended)
-- Base64 encoding support (for git config injection)
-
-## Installation
-
-### 1. Build the Docker Image
-
-Build the image with your timezone and git configuration:
+## Quick Start
 
 ```bash
-docker build --build-arg TZ="America/Denver" --build-arg GITCONFIG=$(base64 -i ~/.gitconfig) -t sandbox .
+./setup.sh
+~/.ai/bin/aih status
+~/.ai/bin/aih agents lint
+vault init
+vault status
+vault archive path/to/note.md
 ```
 
-**Build Arguments:**
-- `TZ`: Timezone setting (default: `America/Denver`). Use any valid timezone from `/usr/share/zoneinfo/`
-- `GITCONFIG`: Optional. Your base64-encoded git config file. Omit to skip git config injection
-
-> Note: Ubuntu 24.04 uses PEP 668 "externally managed" system Python. This image installs Python CLI tools (for example, `semgrep`) into `/home/ai/venv` instead of system site-packages.
-
-### 2. Create a Shell Function
-
-Add this function to your `~/.profile` or `~/.bashrc` to easily launch the sandbox:
+Component bootstrap examples:
 
 ```bash
-# Function to start multi AI CLI capable Docker container
+AI_HOME=/tmp/global ./setup.sh core memory tools skills plugins agents systems infra bin
+./setup.sh clients
+```
+
+Agent definitions are stored in `seed/agents/definitions/*.md` with YAML
+frontmatter and are validated during `setup.sh agents` against required fields
+and filename/id match.
+
+## Install Commands
+
+```bash
+./setup.sh
+```
+
+This installs:
+
+- `~/.ai/bin/aih` (harness CLI)
+
+During setup, shared harness executables are also installed into `~/.ai/bin`
+(or `$AI_HOME/bin`) so any AI TUI can invoke a common command surface.
+
+Add both `~/.ai/tools/bin` and `~/.ai/bin` to your PATH so `vault`, `mem`,
+`docslug`, `transcriptid`, `zmem`, and `aih` are directly invocable.
+
+```bash
+export PATH="$HOME/.ai/tools/bin:$HOME/.ai/bin:$PATH"
+```
+
+## Semantic Memory (zvec-memory)
+
+This harness keeps markdown notes as canonical memory (`vault`) and supports
+`zvec-memory` as a semantic retrieval layer.
+
+Default vector memory path:
+
+```bash
+export ZVEC_MEMORY_PATH="$HOME/.ai/memory/zvec"
+```
+
+Use wrapper commands:
+
+```bash
+zmem init
+zmem add "Important project decision: use harness-first bootstrap."
+zmem search "bootstrap contract"
+zmem stats
+```
+
+## Shared Documentation Vault
+
+Project documentation is expected to live in a separate Obsidian vault repo.
+
+Set `DOC_VAULT_ROOT` to your local documentation vault path:
+
+```bash
+export DOC_VAULT_ROOT="/path/to/your/documentation/vault"
+```
+
+`DOC_VAULT_ROOT` is the global documentation vault location. It is separate from the
+project repo you are actively working in.
+Project documentation folder names are determined by running `docslug` in the working
+project repo. Documentation generation should fail if either `DOC_VAULT_ROOT` is unset
+or `docslug` is unavailable.
+
+Add that export to your shell startup file (`~/.bashrc`, `~/.zshrc`, or `~/.profile`) so tooling can consistently find the shared docs vault.
+
+## Container Workflow
+
+### Prerequisites
+
+- Docker installed and available in your shell
+- New SSH keys created specifically for AI use `ssh-keygen -oa 1000 -t ed25519 -f ~/.ssh/ai_ed25519
+- Optional: base64 support if passing `GITCONFIG` at build time
+
+### Build Image
+
+```bash
+docker build \
+  --build-arg TZ="America/Denver" \
+  --build-arg GITCONFIG="$(base64 -w 0 ~/.gitconfig 2>/dev/null || base64 ~/.gitconfig | tr -d '\n')" \
+  -t sandbox .
+```
+
+Notes:
+
+- `TZ` controls container timezone.
+- `GITCONFIG` is optional; omit it if you do not want to inject git config.
+
+### Run Container
+
+Add this helper to `~/.bashrc`, `~/.zshrc`, or `~/.profile`:
+
+```bash
 sandbox() {
   docker network create sandbox >/dev/null 2>&1 || true
 
@@ -99,254 +146,30 @@ sandbox() {
     -v "$HOME/.ssh/ai_ed25519.pub:/home/ai/.ssh/id_ed25519.pub:ro" \
     -v "$HOME/.ssh/known_hosts:/home/ai/.ssh/known_hosts:ro" \
     -v "$(pwd):/workspace" \
-    -v "$(pwd)/qmd:/home/ai/.cache/qmd" \
     --workdir /workspace \
     sandbox \
     /bin/bash
 }
 ```
 
-Then reload your shell:
-```bash
-source ~/.profile
-```
+On startup, the container entrypoint runs harness setup and client config merge:
 
-### 3. Optional: Add the Lockbox Function
+- `setup.sh` (default components)
+- `setup.sh clients`
 
-For additional network-level security controls, you can also add a `lockbox()` function that uses the same container but with firewall capabilities enabled:
+### Security Note
 
-```bash
-# Function to start sandbox with firewall/network isolation enabled
-lockbox() {
-  docker network create sandbox >/dev/null 2>&1 || true
+The default CLI functions configured in the image use permissive flags (`--yolo`,
+`--dangerously-*`). Treat this container as an untrusted automation environment,
+not a hardened production boundary.
 
-  docker run --rm -it \
-    --network sandbox \
-    --cap-add=NET_ADMIN \
-    --cap-add=NET_RAW \
-    -v "claude:/home/ai/.claude" \
-    -v "codex:/home/ai/.codex" \
-    -v "cursor:/home/ai/.cursor" \
-    -v "gemini:/home/ai/.gemini" \
-    -v "ai:/home/ai/.ai" \
-    -v "$HOME/.ssh/ai_ed25519:/home/ai/.ssh/id_ed25519:ro" \
-    -v "$HOME/.ssh/ai_ed25519.pub:/home/ai/.ssh/id_ed25519.pub:ro" \
-    -v "$HOME/.ssh/known_hosts:/home/ai/.ssh/known_hosts:ro" \
-    -v "$(pwd):/workspace" \
-    -v "$(pwd)/qmd:/home/ai/.cache/qmd" \
-    --workdir /workspace \
-    sandbox \
-    /bin/bash -c "sudo /usr/local/sbin/init-firewall.sh && /bin/bash"
-}
-```
+### Shell Launch Functions
 
-The `lockbox()` function:
-- Uses the **same container** as `sandbox()` - no rebuild needed
-- Enables `NET_ADMIN` and `NET_RAW` capabilities for firewall/network control
-- Automatically runs the `init-firewall.sh` firewall script on startup
-- Provides additional network-level isolation and filtering
-
-Use `lockbox` when you need stricter network controls. Use `sandbox` for standard development.
-
-## Usage
-
-### Standard Sandbox
+These are the shell functions to launch the various tui:
 
 ```bash
-sandbox
+agent() { TID="$(openssl rand -hex 24)" PROVIDER=cursor command agent --yolo "$@"; }
+claude() { TID="$(openssl rand -hex 24)" PROVIDER=claude command claude --dangerously-skip-permissions "$@"; }
+codex() { TID="$(openssl rand -hex 24)" PROVIDER=codex command codex --dangerously-bypass-approvals-and-sandbox "$@"; }
+gemini() { TID="$(openssl rand -hex 24)" PROVIDER=gemini command gemini --yolo "$@"; }
 ```
-
-This command:
-- Creates a Docker network named `sandbox` (if it doesn't exist)
-- Mounts your SSH keys as read-only volumes
-- Shares your current working directory as `/workspace`
-- Provides persistent volumes for each AI tool's configuration
-- Runs with minimal privileges
-
-### Hardened Sandbox with Firewall
-
-```bash
-lockbox
-```
-
-Use `lockbox` for stricter network-level security controls. In addition to everything `sandbox` provides, `lockbox`:
-- Enables `NET_ADMIN` and `NET_RAW` capabilities
-- Automatically initializes firewall rules via `init-firewall.sh` on startup
-- Provides network filtering and isolation
-- Uses the same container - no rebuild necessary
-
-The firewall script (`init-firewall.sh`) is pre-configured to allow communication with:
-- **Anthropic**: `api.anthropic.com` (Claude)
-- **OpenAI**: `auth.openai.com` (Codex)
-- **Google**: `accounts.google.com`, `codeassist.google.com` (Gemini)
-- **Anysphere**: `cursor.com` (Cursor)
-- **Development**: GitHub, GitLab, npm registry, Ubuntu repos, and SSH
-
-All outbound traffic is blocked by default except for explicitly whitelisted domains and the host network.
-
-**When to use `lockbox`:**
-- Testing network-sensitive code
-- Requiring outbound connection controls
-- Needing network-level isolation guarantees
-- Ensuring AI tools can only reach their parent companies
-
-**When to use `sandbox`:**
-- Standard development and experimentation
-- Avoiding unnecessary privilege elevation
-- Most day-to-day work
-
-### Inside the Sandbox
-
-Once inside, you have access to:
-
-- **AI Tools**: `claude`, `codex`, `cursor`, `gemini` (with pre-configured aliases)
-- **Package Managers**: `npm`, `pnpm`, `bun`
-- **Package Managers**: `npm`, `pnpm`, `bun`, `pip` (via `/home/ai/venv`)
-- **Development Tools**: `git`, `gh` (GitHub CLI), `python3`, `vim`, `jq`, `ripgrep`
-- **Workspace**: Your current directory mounted at `/workspace`
-
-### Example Commands
-
-```bash
-# Start development work in your project
-sandbox
-cd /workspace
-git status
-
-# Use Claude Code
-claude --help
-
-# Run Node.js scripts
-bun run script.js
-
-# Use package managers
-pnpm install
-npm test
-```
-
-## Configuration
-
-### Volume Mounts
-
-The sandbox function mounts several Docker volumes for persistent storage:
-
-| Volume | Purpose |
-|--------|---------|
-| `claude` | Claude Code configuration and cache |
-| `codex` | Codex CLI configuration |
-| `cursor` | Cursor editor configuration |
-| `gemini` | Gemini CLI configuration |
-| `ai` | General AI configuration and memory |
-
-### SSH Keys
-
-⚠️ **IMPORTANT: Generate a dedicated SSH key for use with this container. DO NOT reuse your existing SSH keys.**
-
-The setup expects SSH keys at:
-- `~/.ssh/ai_ed25519` (private key, read-only)
-- `~/.ssh/ai_ed25519.pub` (public key, read-only)
-- `~/.ssh/known_hosts` (known hosts, read-only)
-
-#### Generate a New SSH Key for the Sandbox
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/ai_ed25519 -C "ai-sandbox" -N ""
-```
-
-This creates a dedicated key pair specifically for the sandbox.
-
-#### Add the Public Key to Your VCS
-
-You **must** add the new public key to your version control system (GitHub, GitLab, Gitea, etc.) before using the sandbox:
-
-**GitHub:**
-1. Copy your public key: `cat ~/.ssh/ai_ed25519.pub`
-2. Go to Settings → SSH and GPG keys → New SSH key
-3. Paste the key and save
-
-**GitLab:**
-1. Copy your public key: `cat ~/.ssh/ai_ed25519.pub`
-2. Go to Preferences → SSH Keys
-3. Paste the key and save
-
-**Other VCS:**
-- Consult your platform's documentation for adding SSH keys to your account
-- The public key (`~/.ssh/ai_ed25519.pub`) is what you add to your VCS profile
-
-This allows the sandbox to authenticate with your repositories without exposing your main SSH keys.
-
-#### Key Separation Benefits
-
-- **Isolation**: If the container is compromised, only the sandbox-specific key is exposed
-- **Security**: Your main SSH keys remain safe on your host system
-- **Control**: You can easily revoke the sandbox key without affecting other systems
-- **Auditability**: You can track sandbox activity separately in your VCS logs
-
-If you need to use a different key file name, update the key paths in the `sandbox()` function.
-
-### Sudo Access & Password
-
-The `ai` user is configured with sudo privileges. The Dockerfile sets a specific password hash for the `ai` user account. You can change this to your own password:
-
-1. Generate a SHA-512 password hash (using `crypt` format with `$y$` prefix):
-   ```bash
-   python3 -c "import crypt; print(crypt.crypt('your_password', crypt.METHOD_SHA512))"
-   ```
-
-2. Replace the hash in the Dockerfile (line 41):
-   ```dockerfile
-   sed -i 's|^ai:[^:]*:|ai:YOUR_NEW_HASH_HERE:|' /etc/shadow
-   ```
-
-3. Rebuild the image with your new hash.
-
-### Customization
-
-To customize the environment:
-- Modify the `sandbox()` function to add additional volume mounts or environment variables
-- Edit the Dockerfile to install additional tools or change Node.js versions
-- Adjust aliases in the Dockerfile for different CLI tool flags
-- Update the sudo password (see "Sudo Access & Password" section above)
-
-## Advanced Options
-
-### Custom Timezone
-
-Build with a different timezone:
-```bash
-docker build --build-arg TZ="America/New_York" -t sandbox .
-```
-
-### Network Configuration
-
-By default, the sandbox runs without elevated network capabilities. If you need to use the `init-firewall.sh` script for advanced networking (firewall rules, traffic filtering, etc.), add these capabilities to the `sandbox()` function:
-
-```bash
---cap-add=NET_ADMIN \
---cap-add=NET_RAW \
-```
-
-These flags allow:
-- Network configuration via `iproute2`, `ipset`, `iptables`
-- Firewall rule management via the `init-firewall.sh` script
-
-Only add these if you actively need firewall/network control. Otherwise, keep them disabled to minimize the container's privileges.
-
-### Custom Working Directory
-
-Mount a different directory:
-```bash
-docker run --rm -it -v "/path/to/project:/workspace" sandbox /bin/bash
-```
-
-## Troubleshooting
-
-- **SSH key errors**: Ensure your SSH key path matches the one in the sandbox function
-- **Package installation failures**: The container may need more disk space; increase Docker's allocated storage
-- **`externally-managed-environment` during build**: Python package installs must use `/home/ai/venv/bin/python -m pip ...` (or activate `/home/ai/venv`) rather than system `python3 -m pip`
-- **Network issues**: Remove `--cap-add=NET_ADMIN` and `--cap-add=NET_RAW` if experiencing connectivity problems
-- **Volume permission errors**: Check that your host user has read permissions for mounted files
-
-## License
-
-See LICENSE file for details.

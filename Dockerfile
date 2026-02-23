@@ -29,8 +29,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     pip \
     procps \
     python3 \
+    python3-pip \
     python3-venv \
     ripgrep \
+    rsync \
     sudo \
     unzip \
     vim \
@@ -53,11 +55,11 @@ RUN mkdir -p  /home/ai/.gemini
 RUN mkdir -p  /home/ai/.ai/
 
 
-# Setup up aliases
-RUN echo 'alias agent="agent --yolo"' >> /home/ai/.bashrc
-RUN echo 'alias claude="claude --dangerously-skip-permissions"' >> /home/ai/.bashrc
-RUN echo 'alias codex="codex --dangerously-bypass-approvals-and-sandbox"' >> /home/ai/.bashrc
-RUN echo 'alias gemini="gemini --yolo"' >> /home/ai/.bashrc
+# agentic cli functions
+RUN echo 'agent() { TID="$(openssl rand -hex 24)" PROVIDER=cursor command agent --yolo "$@"; }' >> /home/ai/.bashrc
+RUN echo 'claude() { TID="$(openssl rand -hex 24)" PROVIDER=claude command claude --dangerously-skip-permissions "$@"; }' >> /home/ai/.bashrc
+RUN echo 'codex() { TID="$(openssl rand -hex 24)" PROVIDER=codex command codex --dangerously-bypass-approvals-and-sandbox "$@"; }' >> /home/ai/.bashrc
+RUN echo 'gemini() { TID="$(openssl rand -hex 24)" PROVIDER=gemini command gemini --yolo "$@"; }' >> /home/ai/.bashrc
 
 # Copy and set up firewall script
 # TODO: figure out a way to use this but not completely hamper the ai
@@ -67,11 +69,11 @@ RUN echo 'alias gemini="gemini --yolo"' >> /home/ai/.bashrc
 #  chmod 0440 /etc/sudoers.d/ai-firewall
 
 # Copy default configs to image (won't be shadowed by volumes)
-COPY configs/ /etc/ai/configs/
-RUN chown -R ai:ai /etc/ai/configs
-
-# Install global memory system
-COPY shared/ /etc/ai/shared/
+COPY scripts/ /etc/aih/scripts/
+COPY seed/ /etc/aih/seed/
+COPY docs/ /etc/aih/docs/
+COPY setup.sh /etc/aih/setup.sh
+RUN chown -R ai:ai /etc/aih
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh /usr/local/bin/
@@ -104,7 +106,7 @@ ENV PATH="$HOME/venv/bin:$PATH"
 
 # Install semgrep for targeted way to find bugs/security issues
 RUN "$HOME/venv/bin/python" -m pip install --upgrade pip && \
-    "$HOME/venv/bin/python" -m pip install semgrep
+    "$HOME/venv/bin/python" -m pip install semgrep zvec-memory
 
 # Install nvm (latest release; pin to a version tag in the URL for reproducible builds)
 RUN NVM_VERSION=$(curl -s https://api.github.com/repos/nvm-sh/nvm/releases/latest | jq -r .tag_name) && \
@@ -116,34 +118,15 @@ RUN nvm install $NODE_VERSION && nvm alias default $NODE_VERSION && nvm use defa
 # Ensure node and npm are available in non-interactive shells
 ENV PATH="$NVM_DIR/versions/node/v$NODE_VERSION.*/bin:$PATH"
 
-# Install pnpm and bun (as ai user so they install to user home directory)
+# Install pnpm (as ai user so they install to user home directory)
 RUN npm install -g pnpm && pnpm setup
-# pnpm setup adds PATH to .bashrc; set it here too so pnpm is on PATH in later RUN and at runtime
+# pnpm setup adds PATH to .bashrc; set it here too so pnpm is on PATH in later RUN and interactive shells
 ENV PNPM_HOME="/home/ai/.local/share/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-
-RUN curl -fsSL https://bun.sh/install | bash
-
-# Install sqlite, needed for qmd
-RUN pnpm add -g sqlite
-
-# Don't add bun to ENV PATH here; the bun installer already adds it to .bashrc (would duplicate at runtime).
-# Install qmd (github:tobi/qmd); if DependencyLoop, retry with Resolution spec then trust node-llama-cpp
-RUN bun install -g github:tobi/qmd 2>&1 | tee /tmp/bun.out; \
-  _e=${PIPESTATUS[0]}; \
-  if [ $_e -ne 0 ] && grep -q DependencyLoop /tmp/bun.out; then \
-    _spec=$(grep 'Resolution:' /tmp/bun.out | sed -n 's/.*Resolution: *"\([^"]*\)".*/\1/p' | head -1); \
-    [ -n "$_spec" ] && bun install -g "$_spec" && _e=0; \
-  fi; \
-  bun pm -g trust node-llama-cpp; \
-  exit $_e
 
 # Install claude-code
 RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/ai/.bashrc
-
-# Add memory plugin to PATH
-RUN echo 'export PATH="/home/ai/.ai/plugins/memory/bin:$PATH"' >> /home/ai/.bashrc
 
 # Install codex CLI
 RUN npm install -g @openai/codex

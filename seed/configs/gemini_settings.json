@@ -1,0 +1,36 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "oauth-personal"
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "cortex_loader",
+            "type": "command",
+            "command": "~/.ai/infra/hooks/session-start.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  },
+  "general": {
+    "vimMode": true
+  },
+  "ui": {
+    "showMemoryUsage": true
+  },
+  "context": {
+    "loadMemoryFromIncludeDirectories": true
+  },
+  "tools": {
+    "shell": {
+      "showColor": true
+    }
+  }
+}

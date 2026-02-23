@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ZVEC_MEMORY_PATH="${ZVEC_MEMORY_PATH:-$HOME/.ai/memory/zvec}"
+export ZVEC_MEMORY_PATH
+
+usage() {
+  cat <<'EOF'
+Usage:
+  zmem init
+  zmem add "text" [zvec-memory flags...]
+  zmem search "query" [zvec-memory flags...]
+  zmem stats
+  zmem maintain
+  zmem reindex [zvec-memory flags...]
+  zmem serve [zvec-memory flags...]
+  zmem raw <zvec-memory args...>
+
+Notes:
+  - Stores vector memory under: $HOME/.ai/memory/zvec (default)
+  - Uses zvec-memory CLI under the hood
+EOF
+}
+
+ensure_cli() {
+  if ! command -v zvec-memory >/dev/null 2>&1; then
+    echo "Error: zvec-memory is not installed or not on PATH." >&2
+    echo "Install: pip install zvec-memory" >&2
+    exit 1
+  fi
+}
+
+ensure_path() {
+  mkdir -p "$ZVEC_MEMORY_PATH"
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+init)
+  ensure_cli
+  ensure_path
+  echo "zvec-memory path: $ZVEC_MEMORY_PATH"
+  ;;
+add | search | extract | stats | maintain | reindex | serve)
+  ensure_cli
+  ensure_path
+  exec zvec-memory "$cmd" "$@"
+  ;;
+raw)
+  ensure_cli
+  ensure_path
+  exec zvec-memory "$@"
+  ;;
+help | -h | --help)
+  usage
+  ;;
+*)
+  echo "Error: unknown command '$cmd'" >&2
+  usage
+  exit 1
+  ;;
+esac

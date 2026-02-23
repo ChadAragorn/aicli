@@ -1,0 +1,40 @@
+version: 1
+kind: agent-definition
+required:
+  - id
+  - name
+  - purpose
+  - model
+  - skills
+  - tools
+properties:
+  id:
+    type: string
+    description: Stable agent identifier; must match folder name.
+  name:
+    type: string
+    description: Human-readable display name.
+  purpose:
+    type: string
+    description: Primary mission for this agent.
+  model:
+    type: string
+    description: Preferred model or model policy alias.
+  skills:
+    type: array
+    items:
+      type: string
+    description: References to shared skills in ~/.ai/skills.
+  tools:
+    type: array
+    items:
+      type: string
+    description: Allowed tool IDs or groups for this agent.
+  limits:
+    type: object
+    required: false
+    description: Optional safety/approval/execution limits.
+markdown_sections:
+  recommended:
+    - "## Instructions"
+    - "## Workflow"

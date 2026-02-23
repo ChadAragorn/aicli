@@ -1,0 +1,12 @@
+---
+description: Enforce cortex-first bootstrap; defer policy details to cortex/contracts.
+alwaysApply: true
+---
+
+# AI Harness Policy
+
+At the start of every new session, load `~/.ai/cortex.md` before any other user-facing work.
+
+If loading fails, report the failure and retry reading `~/.ai/cortex.md` before proceeding.
+
+After loading cortex, follow `~/.ai/cortex.md` and lazily load contracts from `~/.ai/systems/contracts/` only as needed.

@@ -1,0 +1,602 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VAULT_ROOT="${AI_MEMORY_DIR:-${AI_HOME:-$HOME/.ai}/memory}"
+HEARTBEAT_STATE="${VAULT_ROOT}/heartbeat-state.json"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  vault init                               Create base vault directories and seed notes.
+  vault status                             Print vault counts by note category.
+  vault path                               Print resolved vault root path.
+  vault project                            Print resolved project slug (docslug fallback).
+  vault timestamp [session|iso]            Print current timestamp format.
+  vault new TYPE TITLE [options]           Create a new note and print its path.
+  vault archive NOTE_PATH                  Move a note into 99_archive with archive timestamp.
+
+Types for `vault new`:
+  session | decision | context | task | entity | daily | inbox | moc
+
+Options for `vault new`:
+  --project PROJECT   Override project slug (default: `vault project`)
+  --agent AGENT       Set `agent` frontmatter value
+  --topics "a,b,c"    Comma-separated topics list
+  --tags "x,y"        Comma-separated tags list (default: memory)
+  --template NAME     Render from 00_system/templates/NAME(.md) via Jinja
+  --kind KIND         Entity bucket for TYPE=entity (people|orgs|tools|concepts; default: concepts)
+
+NOTE_PATH for `vault archive`:
+  - absolute path inside the vault root, or
+  - path relative to the vault root.
+
+Examples:
+  vault new session "kickoff sync notes"
+  vault new session "handoff summary" --template summary
+  vault new context "context checkpoint" --template limit
+  vault new entity "vault cli usage" --kind tools --tags "memory,tooling,vault"
+  vault archive 01_projects/my-project/sessions/2026-02-20-101500-kickoff-sync-notes.md
+USAGE
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+slugify() {
+  echo "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
+}
+
+iso_now() { date +"%Y-%m-%dT%H:%M:%S%z"; }
+stamp_now() { date +"%Y-%m-%d-%H%M%S"; }
+today() { date +"%Y-%m-%d"; }
+
+project_slug() {
+  if command -v docslug >/dev/null 2>&1; then
+    docslug
+    return 0
+  fi
+
+  local local_docslug="$HOME/.ai/tools/bin/docslug"
+  if [[ -x "$local_docslug" ]]; then
+    "$local_docslug"
+    return 0
+  fi
+
+  echo "global"
+}
+
+resolve_ai_provider() {
+  local provider="${PROVIDER:-}"
+  provider="$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$provider" ]]; then
+    echo "unknown"
+  else
+    echo "$provider"
+  fi
+}
+
+resolve_transcript_path() {
+  local provider tid tool out
+  provider="$(resolve_ai_provider)"
+  tid="${TID:-}"
+
+  if [[ -z "$tid" || "$provider" == "unknown" ]]; then
+    echo "unknown"
+    return 0
+  fi
+
+  if command -v transcriptid >/dev/null 2>&1; then
+    tool="transcriptid"
+  elif [[ -x "$HOME/.ai/tools/bin/transcriptid" ]]; then
+    tool="$HOME/.ai/tools/bin/transcriptid"
+  else
+    echo "unknown"
+    return 0
+  fi
+
+  out="$("$tool" --provider "$provider" --tid "$tid" 2>/dev/null || true)"
+  out="$(printf '%s' "$out" | tail -n 1 | tr -d '\r')"
+  if [[ -z "$out" || "$out" == "unknown" ]]; then
+    echo "unknown"
+  else
+    echo "$out"
+  fi
+}
+
+ensure_dirs() {
+  mkdir -p \
+    "$VAULT_ROOT/00_system/templates" \
+    "$VAULT_ROOT/01_projects" \
+    "$VAULT_ROOT/02_entities/people" \
+    "$VAULT_ROOT/02_entities/orgs" \
+    "$VAULT_ROOT/02_entities/tools" \
+    "$VAULT_ROOT/02_entities/concepts" \
+    "$VAULT_ROOT/03_daily" \
+    "$VAULT_ROOT/04_inbox" \
+    "$VAULT_ROOT/05_maps" \
+    "$VAULT_ROOT/99_archive"
+}
+
+update_heartbeat_state() {
+  local note_path="$1"
+  local now_iso
+  local now_session
+  now_iso="$(iso_now)"
+  now_session="$(stamp_now)"
+
+  cat >"$HEARTBEAT_STATE" <<EOF_HEARTBEAT
+{
+  "lastCheckpoint": "$now_iso",
+  "lastSession": "$now_session",
+  "lastTrigger": "vault_new",
+  "lastMemoryPath": "$note_path"
+}
+EOF_HEARTBEAT
+}
+
+write_if_missing() {
+  local file="$1"
+  local content="$2"
+  if [[ ! -f "$file" ]]; then
+    printf "%s\n" "$content" >"$file"
+  fi
+}
+
+init_vault() {
+  ensure_dirs
+
+  write_if_missing "$VAULT_ROOT/00_system/VAULT.md" "# Memory Vault"
+  write_if_missing "$VAULT_ROOT/00_system/AGENTS.md" "# Agents"
+  write_if_missing "$VAULT_ROOT/00_system/schema.md" "# Schema"
+  write_if_missing "$VAULT_ROOT/05_maps/projects.md" "# Projects Map"
+  write_if_missing "$VAULT_ROOT/05_maps/entities.md" "# Entities Map"
+  write_if_missing "$VAULT_ROOT/05_maps/timeline.md" "# Timeline Map"
+
+  cat >"$VAULT_ROOT/00_system/templates/base.md" <<'TMPL'
+---
+id: ""
+type: ""
+project: ""
+ai: unknown
+agent: ""
+created: ""
+updated: ""
+status: active
+tags: []
+topics: []
+links: []
+source: conversation
+confidence: medium
+transcript: unknown
+---
+
+## Summary
+
+## Notes
+TMPL
+
+  echo "Initialized vault at: $VAULT_ROOT"
+}
+
+csv_to_yaml_list() {
+  local csv="$1"
+  if [[ -z "$csv" ]]; then
+    echo "[]"
+    return
+  fi
+  local out="["
+  IFS=',' read -r -a parts <<<"$csv"
+  local i=0
+  for raw in "${parts[@]}"; do
+    local trimmed
+    trimmed="$(echo "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -z "$trimmed" ]] && continue
+    [[ $i -gt 0 ]] && out+=", "
+    out+="$(printf '%q' "$trimmed" | sed "s/^'//;s/'$//")"
+    i=$((i + 1))
+  done
+  out+="]"
+  echo "$out" | sed 's/\\ / /g'
+}
+
+ensure_project_tree() {
+  local project="$1"
+  mkdir -p \
+    "$VAULT_ROOT/01_projects/$project/sessions" \
+    "$VAULT_ROOT/01_projects/$project/decisions" \
+    "$VAULT_ROOT/01_projects/$project/context" \
+    "$VAULT_ROOT/01_projects/$project/tasks"
+  write_if_missing "$VAULT_ROOT/01_projects/$project/_index.md" "# $project"
+}
+
+write_note() {
+  local file="$1"
+  local type="$2"
+  local title="$3"
+  local project="$4"
+  local agent="$5"
+  local topics="$6"
+  local tags="$7"
+  local ts_iso="$8"
+  local ts_stamp="$9"
+  local ai_provider="${10}"
+  local transcript_path="${11}"
+  local note_id="mem-${ts_stamp}"
+
+  cat >"$file" <<EOF_NOTE
+---
+id: $note_id
+type: $type
+project: $project
+ai: $ai_provider
+agent: $agent
+created: $ts_iso
+updated: $ts_iso
+status: active
+tags: $(csv_to_yaml_list "$tags")
+topics: $(csv_to_yaml_list "$topics")
+links: []
+source: conversation
+confidence: medium
+transcript: $transcript_path
+---
+
+# $title
+
+## Summary
+
+## Notes
+EOF_NOTE
+}
+
+resolve_template_path() {
+  local template_ref="$1"
+  local candidate
+
+  if [[ -f "$template_ref" ]]; then
+    echo "$template_ref"
+    return 0
+  fi
+
+  candidate="$VAULT_ROOT/00_system/templates/$template_ref"
+  if [[ -f "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+
+  candidate="$VAULT_ROOT/00_system/templates/$template_ref.md"
+  if [[ -f "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+
+  die "template not found: $template_ref"
+}
+
+write_note_from_template() {
+  local template_path="$1"
+  local file="$2"
+  local type="$3"
+  local title="$4"
+  local project="$5"
+  local agent="$6"
+  local topics="$7"
+  local tags="$8"
+  local ts_iso="$9"
+  local ts_stamp="${10}"
+  local ai_provider="${11}"
+  local transcript_path="${12}"
+
+  export VAULT_CTX_ID="mem-${ts_stamp}"
+  export VAULT_CTX_TYPE="$type"
+  export VAULT_CTX_TITLE="$title"
+  export VAULT_CTX_PROJECT="$project"
+  export VAULT_CTX_AI="$ai_provider"
+  export VAULT_CTX_AGENT="$agent"
+  export VAULT_CTX_CREATED="$ts_iso"
+  export VAULT_CTX_UPDATED="$ts_iso"
+  export VAULT_CTX_STATUS="active"
+  export VAULT_CTX_TAGS="$tags"
+  export VAULT_CTX_TOPICS="$topics"
+  export VAULT_CTX_LINKS=""
+  export VAULT_CTX_SOURCE="conversation"
+  export VAULT_CTX_CONFIDENCE="medium"
+  export VAULT_CTX_TRANSCRIPT="$transcript_path"
+
+  python3 - "$template_path" "$file" <<'PY'
+import ast
+import csv
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+try:
+    import jinja2
+except Exception:
+    jinja2 = None
+
+
+def parse_csv(raw):
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in next(csv.reader([raw])) if item.strip()]
+
+
+UNDEFINED = object()
+
+
+def resolve_name(name, ctx, local):
+    name = name.strip()
+    if name in local:
+        return local[name]
+    if name == "loop.index" and "loop.index" in local:
+        return local["loop.index"]
+
+    parts = name.split(".")
+    val = ctx.get(parts[0], UNDEFINED)
+    if val is UNDEFINED:
+        return UNDEFINED
+    for part in parts[1:]:
+        if isinstance(val, dict) and part in val:
+            val = val[part]
+        else:
+            return UNDEFINED
+    return val
+
+
+def eval_expr(expr, ctx, local):
+    expr = expr.strip()
+    m = re.match(r"^(.*?)\s*\|\s*default\((.*)\)\s*$", expr)
+    if m:
+        base_expr = m.group(1).strip()
+        default_expr = m.group(2).strip()
+        value = eval_expr(base_expr, ctx, local)
+        if value is UNDEFINED or value is None or value == "":
+            try:
+                return ast.literal_eval(default_expr)
+            except Exception:
+                return default_expr.strip("'\"")
+        return value
+
+    if (
+        (expr.startswith("'") and expr.endswith("'"))
+        or (expr.startswith('"') and expr.endswith('"'))
+    ):
+        try:
+            return ast.literal_eval(expr)
+        except Exception:
+            return expr.strip("'\"")
+
+    if expr in {"[]", "{}"}:
+        return ast.literal_eval(expr)
+
+    return resolve_name(expr, ctx, local)
+
+
+def stringify(value):
+    if value is UNDEFINED or value is None:
+        return ""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
+    return str(value)
+
+
+VAR_RE = re.compile(r"{{\s*(.*?)\s*}}", re.S)
+LOOP_RE = re.compile(
+    r"{%\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.*?)\s*%}(.*?){%\s*endfor\s*%}",
+    re.S,
+)
+
+
+def render_vars(text, ctx, local):
+    return VAR_RE.sub(lambda m: stringify(eval_expr(m.group(1), ctx, local)), text)
+
+
+def render_loops(text, ctx, local):
+    while True:
+        m = LOOP_RE.search(text)
+        if not m:
+            break
+        item_name, iter_expr, body = m.group(1), m.group(2), m.group(3)
+        items = eval_expr(iter_expr, ctx, local)
+        if items is UNDEFINED or items is None:
+            items = []
+        if not isinstance(items, (list, tuple)):
+            items = [items]
+        rendered_parts = []
+        for i, item in enumerate(items, start=1):
+            loop_local = dict(local)
+            loop_local[item_name] = item
+            loop_local["loop.index"] = i
+            rendered_parts.append(render_template(body, ctx, loop_local))
+        text = text[: m.start()] + "".join(rendered_parts) + text[m.end() :]
+    return text
+
+
+def render_template(text, ctx, local):
+    return render_vars(render_loops(text, ctx, local), ctx, local)
+
+
+template_path = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+template_text = template_path.read_text(encoding="utf-8")
+
+ctx = {
+    "id": os.environ.get("VAULT_CTX_ID", ""),
+    "type": os.environ.get("VAULT_CTX_TYPE", ""),
+    "title": os.environ.get("VAULT_CTX_TITLE", ""),
+    "project": os.environ.get("VAULT_CTX_PROJECT", ""),
+    "ai": os.environ.get("VAULT_CTX_AI", "unknown"),
+    "agent": os.environ.get("VAULT_CTX_AGENT", ""),
+    "created": os.environ.get("VAULT_CTX_CREATED", ""),
+    "updated": os.environ.get("VAULT_CTX_UPDATED", ""),
+    "status": os.environ.get("VAULT_CTX_STATUS", "active"),
+    "tags": parse_csv(os.environ.get("VAULT_CTX_TAGS", "")),
+    "topics": parse_csv(os.environ.get("VAULT_CTX_TOPICS", "")),
+    "links": parse_csv(os.environ.get("VAULT_CTX_LINKS", "")),
+    "source": os.environ.get("VAULT_CTX_SOURCE", "conversation"),
+    "confidence": os.environ.get("VAULT_CTX_CONFIDENCE", "medium"),
+    "transcript": os.environ.get("VAULT_CTX_TRANSCRIPT", "unknown"),
+}
+
+if jinja2 is not None:
+    env = jinja2.Environment()
+    rendered = env.from_string(template_text).render(**ctx)
+else:
+    rendered = render_template(template_text, ctx, {})
+out_path.write_text(rendered.rstrip() + "\n", encoding="utf-8")
+PY
+}
+
+new_note() {
+  [[ $# -ge 2 ]] || die "new requires TYPE and TITLE"
+  local type="$1"; shift
+  local title="$1"; shift
+
+  local project
+  project="$(project_slug)"
+  local agent=""
+  local topics=""
+  local tags="memory"
+  local entity_kind="concepts"
+  local template_ref=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project) shift; [[ $# -gt 0 ]] || die "--project requires a value"; project="$(slugify "$1")" ;;
+      --agent) shift; [[ $# -gt 0 ]] || die "--agent requires a value"; agent="$1" ;;
+      --topics) shift; [[ $# -gt 0 ]] || die "--topics requires a value"; topics="$1" ;;
+      --tags) shift; [[ $# -gt 0 ]] || die "--tags requires a value"; tags="$1" ;;
+      --template) shift; [[ $# -gt 0 ]] || die "--template requires a value"; template_ref="$1" ;;
+      --kind) shift; [[ $# -gt 0 ]] || die "--kind requires a value"; entity_kind="$(slugify "$1")" ;;
+      *) die "unknown option: $1" ;;
+    esac
+    shift
+  done
+
+  ensure_dirs
+  local slug file day ts
+  slug="$(slugify "$title")"
+  day="$(today)"
+  ts="$(stamp_now)"
+
+  case "$type" in
+    session) ensure_project_tree "$project"; file="$VAULT_ROOT/01_projects/$project/sessions/${ts}-${slug}.md" ;;
+    decision) ensure_project_tree "$project"; file="$VAULT_ROOT/01_projects/$project/decisions/${ts}-${slug}.md" ;;
+    context) ensure_project_tree "$project"; file="$VAULT_ROOT/01_projects/$project/context/${ts}-${slug}.md" ;;
+    task) ensure_project_tree "$project"; file="$VAULT_ROOT/01_projects/$project/tasks/${ts}-${slug}.md" ;;
+    entity) mkdir -p "$VAULT_ROOT/02_entities/$entity_kind"; file="$VAULT_ROOT/02_entities/$entity_kind/${slug}.md" ;;
+    daily) file="$VAULT_ROOT/03_daily/${day}.md" ;;
+    inbox) file="$VAULT_ROOT/04_inbox/${ts}-${slug}.md" ;;
+    moc) file="$VAULT_ROOT/05_maps/${slug}.md" ;;
+    *) die "invalid type: $type" ;;
+  esac
+
+  if [[ "$type" == "daily" && -f "$file" ]]; then
+    echo "Daily note already exists: $file"
+    exit 0
+  fi
+
+  local ts_iso ts_stamp template_path ai_provider transcript_path
+  ts_iso="$(iso_now)"
+  ts_stamp="$ts"
+  ai_provider="$(resolve_ai_provider)"
+  transcript_path="$(resolve_transcript_path)"
+
+  if [[ -n "$template_ref" ]]; then
+    template_path="$(resolve_template_path "$template_ref")"
+    write_note_from_template "$template_path" "$file" "$type" "$title" "$project" "$agent" "$topics" "$tags" "$ts_iso" "$ts_stamp" "$ai_provider" "$transcript_path"
+  else
+    write_note "$file" "$type" "$title" "$project" "$agent" "$topics" "$tags" "$ts_iso" "$ts_stamp" "$ai_provider" "$transcript_path"
+  fi
+
+  update_heartbeat_state "$file"
+  echo "$file"
+}
+
+archive_note() {
+  [[ $# -ge 1 ]] || die "archive requires NOTE_PATH"
+  ensure_dirs
+
+  local note_path="$1"
+  local resolved_path="$note_path"
+
+  if [[ "$resolved_path" != /* ]]; then
+    if [[ -f "$VAULT_ROOT/$resolved_path" ]]; then
+      resolved_path="$VAULT_ROOT/$resolved_path"
+    elif [[ -f "$resolved_path" ]]; then
+      resolved_path="$(cd "$(dirname "$resolved_path")" && pwd)/$(basename "$resolved_path")"
+    fi
+  fi
+
+  [[ -f "$resolved_path" ]] || die "note not found: $note_path"
+  [[ "$resolved_path" == "$VAULT_ROOT/"* ]] || die "note must be inside vault: $resolved_path"
+
+  local archive_file base_name archived_ts clean_name
+  base_name="$(basename "$resolved_path")"
+  archived_ts="$(stamp_now)"
+  clean_name="$base_name"
+  if [[ "$base_name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-(.+)$ ]]; then
+    clean_name="${BASH_REMATCH[1]}"
+  fi
+
+  archive_file="$VAULT_ROOT/99_archive/${archived_ts}-$clean_name"
+  if [[ -e "$archive_file" ]]; then
+    archive_file="$VAULT_ROOT/99_archive/${archived_ts}-$(stamp_now)-$clean_name"
+  fi
+  mv "$resolved_path" "$archive_file"
+  echo "$archive_file"
+}
+
+status_vault() {
+  ensure_dirs
+  local projects entities sessions decisions context tasks daily inbox maps
+  projects=$(find "$VAULT_ROOT/01_projects" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+  entities=$(find "$VAULT_ROOT/02_entities" -type f -name "*.md" | wc -l | tr -d ' ')
+  sessions=$(find "$VAULT_ROOT/01_projects" -type f -path "*/sessions/*.md" | wc -l | tr -d ' ')
+  decisions=$(find "$VAULT_ROOT/01_projects" -type f -path "*/decisions/*.md" | wc -l | tr -d ' ')
+  context=$(find "$VAULT_ROOT/01_projects" -type f -path "*/context/*.md" | wc -l | tr -d ' ')
+  tasks=$(find "$VAULT_ROOT/01_projects" -type f -path "*/tasks/*.md" | wc -l | tr -d ' ')
+  daily=$(find "$VAULT_ROOT/03_daily" -type f -name "*.md" | wc -l | tr -d ' ')
+  inbox=$(find "$VAULT_ROOT/04_inbox" -type f -name "*.md" | wc -l | tr -d ' ')
+  maps=$(find "$VAULT_ROOT/05_maps" -type f -name "*.md" | wc -l | tr -d ' ')
+
+  cat <<EOF_STATUS
+Vault: $VAULT_ROOT
+Projects: $projects
+Entities: $entities
+Sessions: $sessions
+Decisions: $decisions
+Context notes: $context
+Tasks: $tasks
+Daily notes: $daily
+Inbox notes: $inbox
+Maps: $maps
+EOF_STATUS
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  init) shift; init_vault "$@" ;;
+  status) shift; status_vault "$@" ;;
+  path) echo "$VAULT_ROOT" ;;
+  project) project_slug ;;
+  timestamp|ts)
+    case "${2:-session}" in
+      session) date +%Y-%m-%d-%H%M%S ;;
+      iso) date +%Y-%m-%dT%H:%M:%S%z ;;
+      *) die "unknown timestamp format: ${2:-}" ;;
+    esac
+    ;;
+  new) shift; new_note "$@" ;;
+  archive) shift; archive_note "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $cmd" ;;
+esac

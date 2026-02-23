@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# docslug - derive a stable documentation slug from git remote origin
+#
+# Usage:
+#   docslug                # defaults to last 3 segments
+#   docslug 2              # last 2 segments
+#   docslug 3 --print-path # also prints the normalized repo path
+#
+# Output example (N=3):
+#   vortex-parent_lms_leads-navbar
+
+N="${1:-3}"
+PRINT_PATH="false"
+if [[ "${2:-}" == "--print-path" || "${1:-}" == "--print-path" ]]; then
+  PRINT_PATH="true"
+  # If first arg was --print-path, shift N defaulted; otherwise keep N from $1
+  if [[ "${1:-}" == "--print-path" ]]; then
+    N="3"
+  fi
+fi
+
+remote="$(git config --get remote.origin.url 2>/dev/null || true)"
+if [[ -z "$remote" ]]; then
+  echo "ERROR: no git remote.origin.url found (are you in a git repo?)" >&2
+  exit 1
+fi
+
+# Trim whitespace
+remote="$(printf '%s' "$remote" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+# Drop trailing .git
+remote="${remote%.git}"
+
+# Normalize to a path like: group/subgroup/repo OR owner/repo
+# Handles:
+#   git@host:group/subgroup/repo
+#   ssh://git@host/group/subgroup/repo
+#   https://host/group/subgroup/repo
+path="$remote"
+
+if [[ "$path" =~ ^git@[^:]+:(.+)$ ]]; then
+  path="${BASH_REMATCH[1]}"
+elif [[ "$path" =~ ^ssh://git@[^/]+/(.+)$ ]]; then
+  path="${BASH_REMATCH[1]}"
+elif [[ "$path" =~ ^https?://[^/]+/(.+)$ ]]; then
+  path="${BASH_REMATCH[1]}"
+fi
+
+# Remove leading slashes if any
+path="${path#/}"
+
+# Split into segments
+IFS='/' read -r -a parts <<< "$path"
+count="${#parts[@]}"
+
+if (( count == 0 )); then
+  echo "ERROR: failed to parse remote into path segments: $remote" >&2
+  exit 1
+fi
+
+# Clamp N to available parts
+if (( N > count )); then
+  N="$count"
+fi
+
+start=$((count - N))
+selected=("${parts[@]:start:N}")
+
+# Join with underscores
+slug="$(IFS=_; printf '%s' "${selected[*]}")"
+
+# Sanitize slug:
+# - replace spaces with '-'
+# - keep alnum, '.', '_', '-' only
+# - collapse multiple underscores/hyphens
+slug="$(printf '%s' "$slug" \
+  | tr ' ' '-' \
+  | sed 's/[^A-Za-z0-9._-]/_/g; s/__*/_/g; s/--*/-/g; s/^[_-]*//; s/[_-]*$//')"
+
+if [[ "$PRINT_PATH" == "true" ]]; then
+  printf 'remote=%s\npath=%s\nslug=%s\n' "$remote" "$path" "$slug"
+else
+  printf '%s\n' "$slug"
+fi
+
