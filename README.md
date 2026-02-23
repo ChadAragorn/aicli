@@ -1,4 +1,4 @@
-# AI Foundation Global Harness
+# AI CLI
 
 This repository defines a local, AI-agnostic harness so different AI TUIs
 (Claude, Codex, Gemini, etc.) can operate against the same system.
