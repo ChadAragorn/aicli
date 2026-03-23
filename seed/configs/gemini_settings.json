@@ -32,5 +32,21 @@
     "shell": {
       "showColor": true
     }
+  },
+  "mcpServers": {
+    "engram": {
+      "command": "engram",
+      "args": ["mcp"]
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Bash(git push*)",
+      "Bash(git rebase*)",
+      "Bash(git filter-repo*)",
+      "Bash(git clean -fdx*)",
+      "Bash(git gc --prune=now*)",
+      "Bash(git merge*)"
+    ]
   }
 }

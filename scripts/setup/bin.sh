@@ -4,8 +4,13 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 ensure_dir "$TARGET_AI_HOME/bin"
 
-if [[ -f "$REPO_ROOT/seed/bin/aih" ]]; then
-  cp -p "$REPO_ROOT/seed/bin/aih" "$TARGET_AI_HOME/bin/aih"
-  chmod +x "$TARGET_AI_HOME/bin/aih"
-  log "Installed aih -> $TARGET_AI_HOME/bin/aih"
+if [[ -d "$REPO_ROOT/seed/bin" ]]; then
+  for source in "$REPO_ROOT"/seed/bin/*; do
+    [[ -f "$source" ]] || continue
+    name="$(basename "$source")"
+    dest="$TARGET_AI_HOME/bin/$name"
+    cp -p "$source" "$dest"
+    chmod +x "$dest"
+    log "Installed $name -> $dest"
+  done
 fi

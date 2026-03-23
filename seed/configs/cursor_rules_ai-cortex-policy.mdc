@@ -10,3 +10,5 @@ At the start of every new session, load `~/.ai/cortex.md` before any other user-
 If loading fails, report the failure and retry reading `~/.ai/cortex.md` before proceeding.
 
 After loading cortex, follow `~/.ai/cortex.md` and lazily load contracts from `~/.ai/systems/contracts/` only as needed.
+
+Never run any of these git commands or their variants: `git push`, `git rebase`, `git filter-repo`, `git clean -fdx`, `git gc --prune=now`, `git merge`. If one is needed, stop and tell the user to run it manually.

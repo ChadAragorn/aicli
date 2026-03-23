@@ -1,0 +1,81 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "instructions": [
+    "~/.ai/cortex.md",
+    "~/.ai/plugins/plugins/agent-browser/skills/agent-browser/SKILL.md"
+  ],
+  "mcp": {
+    "engram": {
+      "type": "local",
+      "command": ["engram", "mcp"],
+      "enabled": true
+    }
+  },
+  "provider": {
+    "llama-cpp": {
+      "name": "llama-server (local)",
+      "options": {
+        "baseURL": "http://host.docker.internal:8080/v1"
+      },
+      "models": {
+        "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M": {
+          "name": "Qwen3.5-35B-A3B-GGUF (local)",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          }
+        }
+      }
+    }
+  },
+  "permission": {
+    "*": "allow",
+    "read": {
+      "*": "allow",
+      "*.env*": "deny",
+      ".env*": "deny",
+      ".env.local": "allow",
+      ".env.example": "allow"
+    },
+    "edit": {
+      "*": "allow",
+      "*.env*": "deny",
+      ".env*": "deny",
+      ".env.local": "allow",
+      ".env.example": "allow"
+    },
+    "glob": {
+      "*": "allow",
+      "*.env*": "deny",
+      ".env*": "deny",
+      ".env.local": "allow",
+      ".env.example": "allow"
+    },
+    "list": {
+      "*": "allow",
+      "*.env*": "deny",
+      ".env*": "deny",
+      ".env.local": "allow",
+      ".env.example": "allow"
+    },
+    "bash": {
+      "*": "allow",
+      "* *.env*": "deny",
+      "* .env*": "deny",
+      "* .env.local": "allow",
+      "* .env.example": "allow",
+      "git push": "deny",
+      "git push *": "deny",
+      "git rebase": "deny",
+      "git rebase *": "deny",
+      "git filter-repo": "deny",
+      "git filter-repo *": "deny",
+      "git clean -fdx": "deny",
+      "git clean -fdx *": "deny",
+      "git gc --prune=now": "deny",
+      "git gc --prune=now *": "deny",
+      "git merge": "deny",
+      "git merge *": "deny"
+    }
+  }
+}

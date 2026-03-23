@@ -8,7 +8,7 @@ This file must be loaded at the start of every new session before any user-facin
 
 Required startup order:
 1. Read `~/.ai/cortex.md`.
-2. Before any user-facing message, mention `TID` and `PROVIDER` values if set.
+2. Mention TID/PROVIDER once at session start only, unless user explicitly asks again.
 3. Do not preload all contracts; load only the contracts required by the current task.
 4. Proceed with task work.
 
@@ -43,9 +43,22 @@ Load contracts lazily by trigger:
 
 ## Session Correlation (TID)
 
-- If `TID` and `PROVIDER` are present in environment, include `TID=<value>` and `PROVIDER=<value>` before any user-facing content.
+- If `TID` and `PROVIDER` are present in environment, include `TID=<value>` and `PROVIDER=<value>` exactly once before the first user-facing response of a new session. Do not repeat unless the user explicitly asks.
 - Use `TID` and `PROVIDER` as the primary session correlation keys for transcript lookup and debugging.
 - If either `TID` or `PROVIDER` is missing, explicitly state which value is missing and continue.
+
+## Project Intelligence (Jumpstart)
+
+The SessionStart hook automatically generates and maintains `.ai/jumpstart.json` in the project root. This file contains cached project intelligence:
+
+- **structure** — `tree -JL2` snapshot of the project layout
+- **stack** — detected languages, frameworks, package manager, and key scripts
+- **last_commit** — SHA and subject of HEAD when the cache was last written
+- **is_git** — whether the project is tracked by git
+
+The hook injects this data into session context automatically. The cache is updated incrementally when HEAD moves: sentinel files changing triggers stack re-detection, files added/deleted triggers structure re-scan, otherwise only the commit note updates.
+
+You may read `.ai/jumpstart.json` directly mid-session if you need to reference project structure or stack without re-scanning. Do not manually edit it — the hook manages its lifecycle.
 
 ## Operating Rules
 
@@ -53,3 +66,13 @@ Load contracts lazily by trigger:
 - Use shared tools and skills before creating new local-only logic.
 - Keep durable memory in `~/.ai/memory` following `~/.ai/systems/contracts/memory.md`.
 - Never access any disallowed secret files (`.env.*` except `.env.local` and `.env.example`).
+
+  ## Command Aliases
+- If user message is exactly `summary`:
+  1) Verify `$TID` and `$PROVIDER` are non-empty by running `echo $TID && echo $PROVIDER`. If either is empty, report which is missing and stop.
+  2) Run `transcriptid --provider "$PROVIDER" --tid "$TID"`.
+  3) If transcript resolution fails, report failure and stop (do not produce plain chat summary).
+  4) Create/update a vault session note with `vault new session ...`. Do not include dates/timestamps in the title; `vault` already prefixes filenames with a timestamp.
+  5) Write summary content into the note.
+  6) Set frontmatter `transcript` to resolved transcript path.
+  7) Reply only with note path and transcript path.

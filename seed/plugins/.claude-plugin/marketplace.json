@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "local-plugins",
+  "description": "Local harness plugins",
+  "owner": {
+    "name": "local"
+  },
+  "plugins": [
+    {
+      "name": "agent-browser",
+      "description": "Browser automation CLI for AI agents. Use when the user needs to interact with websites, navigate pages, fill forms, click buttons, take screenshots, or automate any browser task.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Vercel Labs"
+      },
+      "source": "./plugins/agent-browser",
+      "category": "development"
+    }
+  ]
+}

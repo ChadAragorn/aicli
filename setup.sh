@@ -27,35 +27,6 @@ log() {
   printf '%s\n' "$*"
 }
 
-print_path_hint_if_needed() {
-  local ai_home="${AI_HOME:-$HOME/.ai}"
-  local tools_bin="$ai_home/tools/bin"
-  local harness_bin="$ai_home/bin"
-  local tools_home='$HOME/.ai/tools/bin'
-  local harness_home='$HOME/.ai/bin'
-
-  if [[ ":${PATH:-}:" != *":$tools_bin:"* || ":${PATH:-}:" != *":$harness_bin:"* ]]; then
-    log ""
-    log "PATH hint:"
-    log "  export PATH=\"\$PATH:$harness_home:$tools_home\""
-  fi
-}
-
-print_doc_vault_hint_if_needed() {
-  if [[ -z "${DOC_VAULT_ROOT:-}" ]]; then
-    log ""
-    log "Documentation vault hint:"
-    log "  export DOC_VAULT_ROOT=\"/path/to/your/documentation/vault\""
-    return
-  fi
-
-  if [[ ! -d "$DOC_VAULT_ROOT" ]]; then
-    log ""
-    log "Documentation vault hint:"
-    log "  DOC_VAULT_ROOT is set but path does not exist: $DOC_VAULT_ROOT"
-    log "  update DOC_VAULT_ROOT to an existing local documentation vault path"
-  fi
-}
 
 run_component() {
   local component="$1"
@@ -80,8 +51,8 @@ describe_component() {
   agents) echo "Validate and sync agent definitions from repo seed/agents." ;;
   systems) echo "Sync systems area and ensure systems/prompts and systems/contracts exist." ;;
   infra) echo "Sync infra area and ensure infra/hooks exists." ;;
-  bin) echo "Install shared harness entrypoint (aih) into AI_HOME/bin." ;;
-  clients) echo "Install client-specific configs into ~/.claude ~/.cursor ~/.codex ~/.gemini." ;;
+  bin) echo "Install shared harness entrypoints from seed/bin (e.g., aih, ralph) into AI_HOME/bin." ;;
+  clients) echo "Install client-specific configs into ~/.claude, ~/.cursor, ~/.codex, ~/.gemini, ~/.config/kilo + ~/.local/share/kilo, and ~/.config/opencode + ~/.local/share/opencode." ;;
   *) echo "Unknown component." ;;
   esac
 }
@@ -150,5 +121,3 @@ for arg in "${args[@]}"; do
 done
 
 log "Setup complete."
-print_path_hint_if_needed
-print_doc_vault_hint_if_needed

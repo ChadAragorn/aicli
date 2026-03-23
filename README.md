@@ -14,7 +14,9 @@ This repository defines a local, AI-agnostic harness so different AI TUIs
 ## Layout
 
 - `seed/bin/aih`: Harness CLI source for initializing and validating shared state.
+- `seed/bin/ralph`: Loop runner for one-task-per-run automation across supported CLIs.
 - `seed/tools/bin/vault`: Canonical memory vault CLI (file-native markdown+YAML notes).
+- `seed/systems/prompts/ralph.md`: Canonical Ralph loop prompt synced to `~/.ai/systems/prompts/ralph.md`.
 - `setup.sh`: Root bootstrap orchestrator for new-system provisioning.
 - `scripts/setup/*.sh`: Per-domain installers (`plugins.sh`, `agents.sh`, etc.).
 - `seed/`: Repository seed bundle copied into `$AI_HOME` during setup.
@@ -25,45 +27,63 @@ Bootstrap contract:
 - `~/.ai/cortex.md` is loaded first at session start.
 - contracts are loaded lazily from `~/.ai/systems/contracts/*.md` as needed.
 
-## Install Commands
+## Quick Start (Recommended)
+
+Do this in order:
+
+1. Clone this repo and `cd` into it.
+2. Generate a dedicated SSH key for sandbox use (do not reuse your normal SSH key):
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/ai_ed25519 -C "ai-sandbox" -N ""
+   ```
+3. Build the image:
+   ```bash
+   docker build --build-arg GITCONFIG=$(base64 -i ~/.gitconfig) -t sandbox .
+   ```
+4. Copy the `sandbox()` function from [Run Container](#run-container) into your shell startup file (`~/.bashrc`, `~/.zshrc`, or `~/.profile`).
+5. Source your startup file (for example, `source ~/.zshrc`).
+6. In your terminal, navigate to the project you want mounted into `/workspace`.
+7. Run:
+   ```bash
+   sandbox
+   ```
+
+Do not run `./setup.sh` manually for normal use. The container entrypoint runs the required setup automatically when `sandbox` starts.
+
+## Persistent Memory (engram)
+
+The harness uses a two-layer memory system:
+
+- **Vault** (`~/.ai/memory`) — canonical, file-native markdown notes with YAML frontmatter. Source of truth.
+- **engram** (`~/.ai/memory/engram`) — supplemental memory layer for session summaries and full-text search across past sessions.
+
+`vault` handles durable structured records. `engram` adds searchable session memory with MCP integration so agents can save and retrieve context automatically.
+
+engram is wired as an MCP server in all supported clients (Claude, OpenCode, Gemini, Codex) and provides 13 tools including `mem_save`, `mem_search`, `mem_context`, and `mem_session_summary`.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENGRAM_DATA_DIR` | `~/.ai/memory/engram` | engram SQLite database location |
+
+`ENGRAM_DATA_DIR` is set automatically by the container entrypoint. The path is under `~/.ai/memory` which is persisted by the volume mount.
+
+### Usage
+
+Search memories from the CLI:
 
 ```bash
-./setup.sh
+engram search "bootstrap contract"
 ```
 
-This installs:
-
-- `~/.ai/bin/aih` (harness CLI)
-
-During setup, shared harness executables are also installed into `~/.ai/bin`
-(or `$AI_HOME/bin`) so any AI TUI can invoke a common command surface.
-
-Add both `~/.ai/tools/bin` and `~/.ai/bin` to your PATH so `vault`, `mem`,
-`docslug`, `transcriptid`, `zmem`, and `aih` are directly invocable.
+Browse all memories interactively:
 
 ```bash
-export PATH="$HOME/.ai/tools/bin:$HOME/.ai/bin:$PATH"
+engram tui
 ```
 
-## Semantic Memory (zvec-memory)
-
-This harness keeps markdown notes as canonical memory (`vault`) and supports
-`zvec-memory` as a semantic retrieval layer.
-
-Default vector memory path:
-
-```bash
-export ZVEC_MEMORY_PATH="$HOME/.ai/memory/zvec"
-```
-
-Use wrapper commands:
-
-```bash
-zmem init
-zmem add "Important project decision: use harness-first bootstrap."
-zmem search "bootstrap contract"
-zmem stats
-```
+The MCP server is started automatically by each AI client when needed. No manual initialization required.
 
 ## Shared Documentation Vault
 
@@ -94,10 +114,7 @@ Add that export to your shell startup file (`~/.bashrc`, `~/.zshrc`, or `~/.prof
 ### Build Image
 
 ```bash
-docker build \
-  --build-arg TZ="America/Denver" \
-  --build-arg GITCONFIG="$(base64 -w 0 ~/.gitconfig 2>/dev/null || base64 ~/.gitconfig | tr -d '\n')" \
-  -t sandbox .
+docker build --build-arg GITCONFIG=$(base64 -i ~/.gitconfig) -t sandbox .
 ```
 
 Notes:
@@ -115,11 +132,16 @@ sandbox() {
 
   docker run --rm -it \
     --network sandbox \
-    -v "claude:/home/ai/.claude" \
-    -v "codex:/home/ai/.codex" \
-    -v "cursor:/home/ai/.cursor" \
-    -v "gemini:/home/ai/.gemini" \
-    -v "ai:/home/ai/.ai" \
+    -v "sandbox_home:/home/ai" \
+    -v "sandbox_ai:/home/ai/.ai" \
+    -v "sandbox_cache:/home/ai/.cache" \
+    -v "sandbox_claude:/home/ai/.claude" \
+    -v "sandbox_codex:/home/ai/.codex" \
+    -v "sandbox_config:/home/ai/.config" \
+    -v "sandbox_cursor:/home/ai/.cursor" \
+    -v "sandbox_gemini:/home/ai/.gemini" \
+    -v "sandbox_local:/home/ai/.local" \
+    #-v "$HOME/.ai/memory:/home/ai/.ai/memory" \ # Optional if you want your memories to persist onto your hard drive. Need create local folder first to use.
     -v "$HOME/.ssh/ai_ed25519:/home/ai/.ssh/id_ed25519:ro" \
     -v "$HOME/.ssh/ai_ed25519.pub:/home/ai/.ssh/id_ed25519.pub:ro" \
     -v "$HOME/.ssh/known_hosts:/home/ai/.ssh/known_hosts:ro" \
@@ -147,9 +169,44 @@ These are the shell functions to launch the various tui:
 
 ```bash
 agent() { TID="$(openssl rand -hex 24)" PROVIDER=cursor command agent --yolo "$@"; }
+cursor() { TID="$(openssl rand -hex 24)" PROVIDER=cursor command agent --yolo "$@"; }
 claude() { TID="$(openssl rand -hex 24)" PROVIDER=claude command claude --dangerously-skip-permissions "$@"; }
 codex() { TID="$(openssl rand -hex 24)" PROVIDER=codex command codex --dangerously-bypass-approvals-and-sandbox "$@"; }
 gemini() { TID="$(openssl rand -hex 24)" PROVIDER=gemini command gemini --yolo "$@"; }
+kilo() { auth_file="$HOME/.local/share/kilo/auth.json"; mkdir -p "$(dirname "$auth_file")"; if [ -f "$auth_file" ] && grep -q APIKEY "$auth_file"; then [ -z "${MINIMAX_API_KEY:-}" ] && read -s -p "MiniMax API key: " MINIMAX_API_KEY && echo; sed -i "s/APIKEY/$MINIMAX_API_KEY/g" "$auth_file"; fi; TID="$(openssl rand -hex 24)" PROVIDER=kilo command kilo "$@"; }
+opencode() { auth_file="$HOME/.local/share/opencode/auth.json"; mkdir -p "$(dirname "$auth_file")"; if [ -f "$auth_file" ] && grep -q APIKEY "$auth_file"; then [ -z "${MINIMAX_API_KEY:-}" ] && read -s -p "MiniMax API key: " MINIMAX_API_KEY && echo; sed -i "s/APIKEY/$MINIMAX_API_KEY/g" "$auth_file"; fi; TID="$(openssl rand -hex 24)" PROVIDER=opencode command opencode "$@"; }
+```
+
+### Ralph Loop
+
+`ralph` runs a prompt-driven execution loop for `claude`, `opencode`, or `kilo`.
+It is installed to `~/.ai/bin/ralph` and reads the default prompt from
+`~/.ai/systems/prompts/ralph.md`.
+
+Required workspace files (must already exist before running `ralph`):
+
+- `tasks.md`
+- `status.md`
+
+Default behavior:
+
+- One task per iteration
+- Stops on `Status: done` or `Status: blocked`
+- Sets `Status: done` automatically when no unchecked tasks remain
+- Per-iteration timeout supported (`--iteration-timeout`, default 600s)
+
+CLI defaults:
+
+- Claude: model `haiku`, output format `json`
+- OpenCode: model `minimax/MiniMax-M2.5`
+- Kilo: model `minimax/MiniMax-M2.5`
+
+Examples:
+
+```bash
+ralph --cli claude --max-iterations 5 --iteration-timeout 30
+ralph --cli opencode --max-iterations 5 --iteration-timeout 30
+ralph --cli kilo --max-iterations 5 --iteration-timeout 30 -- --auto
 ```
 
 ### Once you have built the sandbox docker image, use sandbox in the following way
@@ -168,10 +225,93 @@ This command:
 
 Once inside, you have access to:
 
-- **AI Tools**: `claude`, `codex`, `cursor`, `gemini` (with pre-configured start functions)
+- **AI Tools**: `claude`, `codex`, `cursor`, `gemini`, `kilo`, `opencode` (with pre-configured start functions)
+- **Memory**: `engram` (persistent session memory, MCP server, TUI — `engram tui`, `engram search`)
 - **Package Managers**: `npm`, `pnpm`, `bun`
-- **Development Tools**: `git`, `gh` (GitHub CLI), `python3`, `vim`, `jq`, `ripgrep`
+- **Development Tools**: `git`, `gh` (GitHub CLI), `glab` (GitLab CLI), `python3`, `vim`, `jq`, `ripgrep`
+- **Browser Automation**: `agent-browser` (Playwright-backed browser CLI for AI agents)
+- **Worktree Management**: `wt` (git worktree helper)
 - **Workspace**: Your current directory mounted at `/workspace`
+
+### Git Visualization Tools
+
+#### gitlogue — cinematic git history replay
+Replays your commit history as an animated TUI. Defaults to a screensaver-style random commit replay.
+
+```bash
+# Replay last 10 commits oldest-first
+gitlogue --commit HEAD~10..HEAD --order asc
+
+# Filter by author, loop continuously
+gitlogue --author "alice" --loop
+
+# View staged or unstaged changes
+gitlogue diff
+gitlogue diff --unstaged
+
+# Date range with a theme
+gitlogue --after "1 week ago" --theme dracula
+
+# Speed up the replay (default is slow; lower ms = faster)
+gitlogue --speed 10
+```
+
+#### diffwatch — live file diff TUI
+Opens a TUI that watches a directory and shows colored diffs as files are written. Useful for watching what the AI is editing in real time.
+
+```bash
+# Watch current directory (non-recursive)
+diffwatch
+
+# Watch entire project recursively
+diffwatch -p /workspace -r
+
+# Watch a specific path recursively
+diffwatch -p /workspace/src -r
+```
+
+Press `q` or `Ctrl+C` to exit.
+
+#### gsw (git-status-watch) — live git status stream
+Streams a new git status line every time the repo changes, event-driven via inotify (no polling). Also powers the Claude Code status bar GIT column automatically.
+
+```bash
+# Continuous watch with formatted output
+gsw --format '{branch} +{staged} ~{modified} ?{untracked} ⇡{ahead}⇣{behind}'
+
+# One-shot (current status, then exit)
+gsw --once --format '{branch} +{staged} ~{modified} ?{untracked}'
+
+# Include stash count and repo state (merge/rebase/etc.)
+gsw --format '{branch} +{staged} ~{modified} ?{untracked} stash:{stash} [{state}]'
+```
+
+Format placeholders: `{branch}`, `{staged}`, `{modified}`, `{untracked}`, `{conflicted}`, `{ahead}`, `{behind}`, `{stash}`, `{state}`
+
+#### wt — parallel worktree launcher
+
+Creates N isolated copies of the current repo as git worktrees, each on its own branch, for running multiple agents against the same codebase simultaneously without conflicts.
+
+Folders and branches are named `{short-sha}-v{n}` scoped to the current HEAD, so repeated runs never clobber each other.
+
+**When to use:** spin up multiple worktrees when you want to run several AI agents in parallel on competing implementations of the same feature, then compare and cherry-pick the best result.
+
+```bash
+# Create 3 worktrees from current HEAD (e.g. abc1234-v1, abc1234-v2, abc1234-v3)
+wt 3
+
+# Each worktree is an independent branch you can work in
+cd .worktree/abc1234-v1
+claude  # agent 1 works here
+
+cd .worktree/abc1234-v2
+claude  # agent 2 works here independently
+
+# Remove all worktrees when done
+wt --rm
+```
+
+Worktrees are created under `.worktree/` which is automatically added to `.gitignore`.
 
 ### SSH Keys
 
@@ -231,5 +371,5 @@ You can change this to your own password:
 
 2. Replace the hash in the Dockerfile with the hash you just generated (line 45):
    Start with the `$` and replace from it to the last `:`.
-   
+
 3. Rebuild the image with your new hash.

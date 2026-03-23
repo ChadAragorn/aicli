@@ -25,7 +25,7 @@ ensure_venv_activation_in_bashrc() {
     cat >> "$tmp" <<EOF
 
 $marker_start
-if [ -f "$HOME/venv/bin/activate" ] && [ -z "\${VIRTUAL_ENV:-}" ]; then
+if [ -f "$HOME/venv/bin/activate" ] && [ -z "\${VIRTUAL_ENV:-}" ] && [[ ":\${PATH}:" != *":$HOME/venv/bin:"* ]]; then
   . "$HOME/venv/bin/activate"
 fi
 $marker_end
@@ -66,10 +66,10 @@ EOF
     rm -f "$tmp"
 }
 
-ensure_zvec_env_in_bashrc() {
+ensure_engram_env_in_bashrc() {
     local bashrc="$HOME/.bashrc"
-    local marker_start="# >>> zvec-memory >>>"
-    local marker_end="# <<< zvec-memory <<<"
+    local marker_start="# >>> engram >>>"
+    local marker_end="# <<< engram <<<"
     local tmp
 
     [[ -f "$bashrc" ]] || return 0
@@ -84,9 +84,9 @@ ensure_zvec_env_in_bashrc() {
 
     cat >> "$tmp" <<'EOF'
 
-# >>> zvec-memory >>>
-export ZVEC_MEMORY_PATH="${ZVEC_MEMORY_PATH:-$HOME/.ai/memory/zvec}"
-# <<< zvec-memory <<<
+# >>> engram >>>
+export ENGRAM_DATA_DIR="${ENGRAM_DATA_DIR:-$HOME/.ai/memory/engram}"
+# <<< engram <<<
 EOF
 
     if ! cmp -s "$tmp" "$bashrc"; then
@@ -95,11 +95,46 @@ EOF
     rm -f "$tmp"
 }
 
-mkdir -p "$AI_HOME" "$HOME/.claude" "$HOME/.codex" "$HOME/.cursor/rules" "$HOME/.gemini"
+# Remove stale PATH entries from .bashrc for tools now installed to system paths,
+# strip the redundant standalone .local/bin export, and collapse excessive blank lines
+remove_stale_paths_from_bashrc() {
+    local bashrc="$HOME/.bashrc"
+    [[ -f "$bashrc" ]] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    grep -v -E '((\$HOME|/home/[^/]+)/\.(kilo|opencode)/bin|^# (kilo|opencode)$|^export PATH="\$HOME/\.local/bin:\$PATH"$)' "$bashrc" \
+        | cat -s > "$tmp"
+    if ! cmp -s "$tmp" "$bashrc"; then
+        cp "$tmp" "$bashrc"
+    fi
+    rm -f "$tmp"
+}
+remove_stale_paths_from_bashrc
+
+# Remove stale home-dir binaries for tools now installed to /usr/local/bin
+rm -f "$HOME/.kilo/bin/kilo" "$HOME/.opencode/bin/opencode"
+rm -f "$HOME/.nvm/versions/node/v"*/bin/codex \
+      "$HOME/.nvm/versions/node/v"*/bin/gemini \
+      "$HOME/.nvm/versions/node/v"*/bin/agent-browser
+
+mkdir -p \
+    "$AI_HOME" \
+    "$HOME/.claude" \
+    "$HOME/.codex" \
+    "$HOME/.cursor/rules" \
+    "$HOME/.gemini" \
+    "$HOME/.config/kilo" \
+    "$HOME/.config/opencode" \
+    "$HOME/.local/share/kilo" \
+    "$HOME/.local/share/opencode" \
+    "$HOME/.local/state/kilo" \
+    "$HOME/.local/state/opencode" \
+    "$HOME/.cache/kilo" \
+    "$HOME/.cache/opencode"
 
 ensure_venv_activation_in_bashrc
 ensure_harness_path_in_bashrc
-ensure_zvec_env_in_bashrc
+ensure_engram_env_in_bashrc
 
 if [[ -f "$HARNESS_ROOT/setup.sh" ]]; then
     (

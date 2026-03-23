@@ -1,0 +1,8 @@
+{
+  "name": "agent-browser",
+  "description": "Browser automation CLI for AI agents using agent-browser",
+  "author": {
+    "name": "Vercel Labs",
+    "url": "https://github.com/vercel-labs/agent-browser"
+  }
+}

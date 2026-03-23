@@ -1,9 +1,14 @@
 {
-  "statusLine": {
-    "type": "command",
-    "command": "~/.claude/statusline.sh"
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.minimax.io/anthropic",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1,
+    "ANTHROPIC_MODEL": "MiniMax-M2.5",
+    "ANTHROPIC_SMALL_FAST_MODEL": "MiniMax-M2.5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2.5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M2.5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M2.5"
   },
-  "model": "sonnet",
   "hooks": {
     "SessionStart": [
       {
@@ -16,7 +21,6 @@
       }
     ]
   },
-  "effortLevel": "medium",
   "permissions": {
     "deny": [
       "Bash(git push*)",
@@ -26,16 +30,5 @@
       "Bash(git gc --prune=now*)",
       "Bash(git merge*)"
     ]
-  },
-  "enabledPlugins": {
-    "agent-browser@local-plugins": true
-  },
-  "extraKnownMarketplaces": {
-    "local-plugins": {
-      "source": {
-        "source": "directory",
-        "path": "~/.ai/plugins"
-      }
-    }
   }
 }
